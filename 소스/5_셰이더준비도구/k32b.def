@@ -1,0 +1,17 @@
+LIBRARY kernel32.dll
+EXPORTS
+GetCommandLineW
+LoadLibraryW
+GetProcAddress
+CreateFileW
+ReadFile
+WriteFile
+CloseHandle
+GetFileSize
+GetFileTime
+SetFileTime
+VirtualAlloc
+WideCharToMultiByte
+ExitProcess
+DeleteFileW
+CopyFileW

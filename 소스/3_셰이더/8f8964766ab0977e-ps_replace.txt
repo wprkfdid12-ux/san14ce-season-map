@@ -1,0 +1,277 @@
+// SAN14 season map: replacement for the alpha-tested object/foliage G-buffer shader 8f8964766ab0977e.
+// Identical to the game's shader (translated instruction by instruction) unless the draw is a
+// wind-animated tree (d3dx.ini binds its VS constants to b13); then in the cold months the broadleaf
+// foliage thins out to bare branches, the rest browns, and snow settles on top.
+cbuffer cb0 : register(b0) { float4 cb0[5]; }
+Texture2D<float4> t0 : register(t0);
+Texture2D<float4> t1 : register(t1);
+Texture2D<float4> t2 : register(t2);
+Texture2D<float4> t3 : register(t3);
+SamplerState s0 : register(s0);
+SamplerState s1 : register(s1);
+SamplerState s2 : register(s2);
+SamplerState s3 : register(s3);
+// SAN14 season: trees (shared by the foliage colour pass and its shadow pass)
+// Enabled only for wind-animated tree draws: d3dx.ini binds the tree VS constants to ps-cb13.
+Texture1D<float4> IniParams : register(t120);
+cbuffer TreeVS : register(b13) { float4 tvM[4]; }     // tree VS cb0[0..3] = world -> clip (row vectors)
+
+static const float TPI2 = 6.2831853;
+float th21(float2 p) { p = frac(p * float2(123.34, 456.21)); p += dot(p, p + 45.32); return frac(p.x * p.y); }
+float tvn(float2 p)
+{
+    float2 i = floor(p), f = frac(p); float2 u = f * f * (3.0 - 2.0 * f);
+    float a = th21(i), b = th21(i + float2(1, 0)), c = th21(i + float2(0, 1)), d = th21(i + float2(1, 1));
+    return lerp(lerp(a, b, u.x), lerp(c, d, u.x), u.y);
+}
+bool tree_active() { return any(tvM[0] != 0) || any(tvM[1] != 0); }
+// v26c: the rain grid the rules module writes (list entries 150.., 55x55 cells of 4x4 hexes: v = wet% + tier*1000 + snowing*10000 ...)
+// v26k30: the game's own hex grid (list 3420: x = first column's x, y = z origin, z = column step, w = hex radius - read from the
+//         game by the rules module; the game's own numbers until then). Centre of cell (col,row): x = X0 + col*CW, z = Z0 + row*H +
+//         (even column ? H/2 : 0), H = sqrt(3)*R; written below as C0 + (col*CW, (row - 0.5*odd)*CH) with C0 = (X0, Z0 + H/2).
+//         (The grid used before - 700 x 808.29 from (37550, 13850) - drifted up to 0.7 of a cell off the game's toward the east and south.)
+static float CW_ = 702.0, CH_ = 810.6002;
+static float2 C0_ = float2(37594.0, 13740.6);
+void gridInit()
+{
+    float4 g = IniParams.Load(int2(3420, 0));
+    if (!(g.z > 500.0 && g.z < 900.0 && g.w > 300.0 && g.w < 600.0)) g = float4(37594.0, 13335.2998, 702.0, 468.0);
+    CW_ = g.z; CH_ = g.w * 1.7320508; C0_ = float2(g.x, g.y + CH_ * 0.5);
+}
+float hexIdxAt(float2 wp)                            // the cell under a world point (the game's nearest-centre rule), -1 off the map
+{
+    float c0 = floor((wp.x - C0_.x) / CW_); float bestD = 1e12, best = -1.0;
+    [unroll] for (int kq = 0; kq < 2; kq++) {
+        float col1 = c0 + kq; float codd = col1 - floor(col1 * 0.5) * 2.0;
+        float row1 = round((wp.y - C0_.y) / CH_ + 0.5 * codd);
+        float2 cand = C0_ + float2(col1 * CW_, (row1 - 0.5 * codd) * CH_);
+        float dd = dot(wp - cand, wp - cand);
+        if (dd < bestD) { bestD = dd; best = (col1 >= 0.0 && col1 < 220.0 && row1 >= 0.0 && row1 < 220.0) ? row1 * 220.0 + col1 : -1.0; }
+    }
+    return best;
+}
+// v26k30: the rules' own weather of a cell (list 3424 on, one byte a cell, three cells a float): bits 0-1 rain tier (1 drizzle / sleet,
+//         2 rain / snow, 3 downpour / snowstorm), 2 snowing, 3-4 lying snow (1 thin, 2 deep - the value the speed and the tile info use),
+//         5 river ice, 6 shaken ground, 7 mud. The map draws rain, snow and ice exactly on the cells that have them.
+float cellWx(float idx)
+{
+    if (idx < 0.0) return 0.0;
+    float q = floor((idx + 0.5) / 3.0); float k = idx - q * 3.0;
+    float4 f4 = IniParams.Load(int2(3424 + (int)floor((q + 0.5) / 4.0), 0)); float f = f4[(int)(q - floor((q + 0.5) / 4.0) * 4.0)];
+    float d = floor(f * exp2(-8.0 * k) + 1e-3); return d - floor(d / 256.0 + 1e-4) * 256.0;
+}
+float wxBits(float b, float lo, float n) { float d = floor(b * exp2(-lo) + 1e-3); float m = exp2(n); return d - floor(d / m + 1e-4) * m; }
+float4 tree_rain_cell(float i, float j)
+{
+    float idx = clamp(j, 0.0, 54.0) * 55.0 + clamp(i, 0.0, 54.0);
+    float4 v4 = IniParams.Load(int2(150 + (int)floor((idx + 0.5) / 4.0), 0)); float v = v4[(int)(idx - floor((idx + 0.5) / 4.0) * 4.0)];
+    float cr = floor(v / 100000.0 + 1e-4); v -= cr * 100000.0;
+    float sn = floor(v / 10000.0 + 1e-4); v -= sn * 10000.0;
+    float tier = floor(v / 1000.0 + 1e-4); v -= tier * 1000.0;
+    return float4(tier, saturate(v / 100.0), sn, cr);
+}
+float4 tree_rain(float2 wp)                          // bilinear; wp = world xz
+{
+    float gx = (wp.x - C0_.x) / (CW_ * 4.0) - 0.5, gy = (wp.y - C0_.y) / (CH_ * 4.0) - 0.5;   // v26k30: the game's own grid
+    float x0 = floor(gx), y0 = floor(gy); float fx = gx - x0, fy = gy - y0;
+    float4 a = tree_rain_cell(x0, y0), b = tree_rain_cell(x0 + 1.0, y0), c = tree_rain_cell(x0, y0 + 1.0), d = tree_rain_cell(x0 + 1.0, y0 + 1.0);
+    return lerp(lerp(a, b, fx), lerp(c, d, fx), fy);
+}
+
+float4x4 inv4(float4x4 m)
+{
+    float a00 = m[0][0], a01 = m[0][1], a02 = m[0][2], a03 = m[0][3];
+    float a10 = m[1][0], a11 = m[1][1], a12 = m[1][2], a13 = m[1][3];
+    float a20 = m[2][0], a21 = m[2][1], a22 = m[2][2], a23 = m[2][3];
+    float a30 = m[3][0], a31 = m[3][1], a32 = m[3][2], a33 = m[3][3];
+    float b00 = a00 * a11 - a01 * a10, b01 = a00 * a12 - a02 * a10, b02 = a00 * a13 - a03 * a10;
+    float b03 = a01 * a12 - a02 * a11, b04 = a01 * a13 - a03 * a11, b05 = a02 * a13 - a03 * a12;
+    float b06 = a20 * a31 - a21 * a30, b07 = a20 * a32 - a22 * a30, b08 = a20 * a33 - a23 * a30;
+    float b09 = a21 * a32 - a22 * a31, b10 = a21 * a33 - a23 * a31, b11 = a22 * a33 - a23 * a32;
+    float det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+    float id = abs(det) > 1e-30 ? 1.0 / det : 0.0;
+    float4x4 r;
+    r[0] = float4(a11 * b11 - a12 * b10 + a13 * b09, a02 * b10 - a01 * b11 - a03 * b09, a31 * b05 - a32 * b04 + a33 * b03, a22 * b04 - a21 * b05 - a23 * b03);
+    r[1] = float4(a12 * b08 - a10 * b11 - a13 * b07, a00 * b11 - a02 * b08 + a03 * b07, a32 * b02 - a30 * b05 - a33 * b01, a20 * b05 - a22 * b02 + a23 * b01);
+    r[2] = float4(a10 * b10 - a11 * b08 + a13 * b06, a01 * b08 - a00 * b10 - a03 * b06, a30 * b04 - a31 * b02 + a33 * b00, a21 * b02 - a20 * b04 - a23 * b00);
+    r[3] = float4(a11 * b07 - a10 * b09 - a12 * b06, a00 * b09 - a01 * b07 + a02 * b06, a31 * b01 - a30 * b03 - a32 * b00, a20 * b03 - a21 * b01 + a22 * b00);
+    return r * id;
+}
+// world position of a pixel: ndc = (x, y, depth) ; clip = [world,1] * M
+float3 tree_world(float3 ndc)
+{
+    float4x4 M = float4x4(tvM[0], tvM[1], tvM[2], tvM[3]);
+    float4 h = mul(float4(ndc, 1.0), inv4(M));
+    return h.xyz / (abs(h.w) > 1e-20 ? h.w : 1e-20);
+}
+// v23: climate at a world point from the regional climate map (same as the terrain): T (deg C), warm = warming trend,
+//      snow factor, ev = evergreen country (mild winters)
+Texture2DArray<float4> TexClim : register(t109);
+Texture2D<float4> TexZone : register(t108);           // v24: r = north of the Yellow River
+float zoneNorth(float2 uv)
+{
+    float2 p = saturate(uv) * 512.0 - 0.5;
+    int2 b = int2(floor(p)); float2 f = p - b;
+    int2 b0 = clamp(b, 0, 511), b1 = clamp(b + 1, 0, 511);
+    float a = TexZone.Load(int3(b0.x, b0.y, 0)).r, c = TexZone.Load(int3(b1.x, b0.y, 0)).r;
+    float d = TexZone.Load(int3(b0.x, b1.y, 0)).r, e = TexZone.Load(int3(b1.x, b1.y, 0)).r;
+    return lerp(lerp(a, c, f.x), lerp(d, e, f.x), f.y);
+}
+float4 tclimAt(float2 uv, int sl)
+{
+    float2 p = saturate(uv) * 128.0 - 0.5;
+    int2 b = int2(floor(p)); float2 f = p - b;
+    int2 b0 = clamp(b, 0, 127), b1 = clamp(b + 1, 0, 127);
+    float4 a = TexClim.Load(int4(b0.x, b0.y, sl, 0)), c = TexClim.Load(int4(b1.x, b0.y, sl, 0));
+    float4 d = TexClim.Load(int4(b0.x, b1.y, sl, 0)), e = TexClim.Load(int4(b1.x, b1.y, sl, 0));
+    return lerp(lerp(a, c, f.x), lerp(d, e, f.x), f.y);
+}
+// v26h: the year's weather nodes the rules module writes (list entries base..base+20, 9x9 over the map), as the ground reads them
+float tnodeAt(int base, float2 uv)
+{
+    float fx = saturate(uv.x) * 8.0, fy = saturate(uv.y) * 8.0; float x0 = min(floor(fx), 7.0), y0 = min(floor(fy), 7.0); float ax = fx - x0, ay = fy - y0;
+    float k00 = y0 * 9.0 + x0, k10 = k00 + 1.0, k01 = k00 + 9.0, k11 = k01 + 1.0;
+    float4 q00 = IniParams.Load(int2(base + (int)floor((k00 + 0.5) / 4.0), 0)); float v00 = q00[(int)(k00 - floor((k00 + 0.5) / 4.0) * 4.0)];
+    float4 q10 = IniParams.Load(int2(base + (int)floor((k10 + 0.5) / 4.0), 0)); float v10 = q10[(int)(k10 - floor((k10 + 0.5) / 4.0) * 4.0)];
+    float4 q01 = IniParams.Load(int2(base + (int)floor((k01 + 0.5) / 4.0), 0)); float v01 = q01[(int)(k01 - floor((k01 + 0.5) / 4.0) * 4.0)];
+    float4 q11 = IniParams.Load(int2(base + (int)floor((k11 + 0.5) / 4.0), 0)); float v11 = q11[(int)(k11 - floor((k11 + 0.5) / 4.0) * 4.0)];
+    return lerp(lerp(v00, v10, ax), lerp(v01, v11, ax), ay);
+}
+void tree_climate(float3 w, float month, out float T, out float warm, out float snowT, out float ev, out float wM)
+{
+    float2 uv = saturate(w.xz / 204800.0);
+    float4 ip1 = IniParams.Load(int2(1, 0));
+    float xun = (ip1.x >= 0.0 && ip1.x <= 2.0) ? round(ip1.x) : 1.0;
+    // v26h: the same calendar as the ground (v25.9i: KOEI's seasons - game month m shows the real climate of month m+2);
+    //       until now the trees read the real month m and ran two months behind the land
+    float tpos = clamp(round(month), 1.0, 12.0) + 1.0 + (xun - 1.0) / 3.0, tfl = floor(tpos);
+    float4 cl = lerp(tclimAt(uv, ((int)tfl + 12) % 12), tclimAt(uv, ((int)tfl + 13) % 12), tpos - tfl);   // v24: by turn
+    float lapse = 0.0045 * max(w.y - 750.0, 0.0);
+    // v26h: the year's weather (the nodes the ground reads): a warm / cold year moves leaf-out, autumn colour and leaf fall a
+    //       little earlier / later (limited to 2.5 C ~ about ten days), a dry year brings the colour and the fall a touch earlier.
+    //       A normal year (anomaly 0, rain x1) is exactly what it was.
+    float4 wctl = IniParams.Load(int2(100, 0));
+    float wdT = 0.0; wM = 1.0;
+    [branch] if (wctl.w > 0.5 && abs(wctl.z - 26.0) < 0.5) { wdT = clamp(tnodeAt(101, uv), -2.5, 2.5); wM = clamp(tnodeAt(122, uv), 0.4, 1.8); }
+    float Tw = cl.r - lapse + wdT;
+    T = Tw - 0.8 * max(0.0, 1.0 - wM);
+    warm = smoothstep(-1.5, 1.5, cl.g);
+    snowT = smoothstep(2.0, -9.0, Tw - 4.0 * zoneNorth(uv));                    // v24: snow 4 C colder north of the Yellow River
+    ev = smoothstep(2.0, 6.5, cl.a - lapse);
+}
+// how much of this texel is broadleaf (deciduous) foliage: green, not grey-green needles
+float leafness(float3 c)
+{
+    float mx = max(c.r, max(c.g, c.b)), mn = min(c.r, min(c.g, c.b));
+    float green = saturate((c.g - max(c.r, c.b)) / max(mx, 1e-3) * 8.0);
+    float everg = smoothstep(0.50, 0.70, mn / max(mx, 1e-3));
+    return green * (1.0 - everg);
+}
+// leaf-off amount for this climate: autumn leaf fall ~T 9->3, spring leaf-out a little later
+float bareness(float T, float warm, float ev) { return smoothstep(9.0 + 2.0 * warm, 3.0 + 2.0 * warm, T) * (1.0 - 0.6 * ev); }
+// 1 = this foliage texel is gone (leaves fallen)
+bool leaf_gone(float2 uv, float bare, float leaf)
+{
+    float n = tvn(uv * 40.0) * 0.55 + tvn(uv * 160.0 + 7.3) * 0.25 + th21(floor(uv * 512.0)) * 0.20;
+    return n < bare * leaf * 0.93;
+}
+
+float2 octenc(float3 r)        // r = (x, y, z) as the game builds it; returns 0..1
+{
+    float w = abs(r.z) + abs(r.y);
+    w = w + abs(r.x);
+    float3 n = r / w;
+    float2 r4 = 1.0 - abs(n.zy);
+    bool3 ge = n >= 0.0;
+    float2 xw = float2(ge.y ? 1.0 : -1.0, ge.z ? 1.0 : -1.0) * r4;
+    float2 res = ge.x ? n.yz : xw;
+    return res * 0.5 + 0.5;
+}
+
+void main(float4 pos : SV_Position, float4 v1 : TEXCOORD0, float3 v2 : TEXCOORD1, float2 v3 : TEXCOORD2,
+          out float4 o0 : SV_Target0, out float4 o1 : SV_Target1, out float4 o2 : SV_Target2,
+          out float4 o3 : SV_Target3, out float4 o4 : SV_Target4)
+{
+    float4 r0 = t0.Sample(s0, v3.xy);
+    r0.w = r0.w - cb0[4].x;
+    float3 alb = r0.xyz;
+    if (r0.w < 0) discard;
+    uint mid = (uint)((float)asint(cb0[4].y));
+    o1.w = (float)(mid << 8) * 1.5259021893143654e-05;
+
+    float3 nm = t3.Sample(s3, v3.xy).xyz * 2.0 - 1.0;
+    nm = nm * rsqrt(dot(nm, nm));
+    float3 r1 = rsqrt(dot(v1.xyz, v1.xyz)) * v1.zxy;
+    float3 r2 = nm.yyy * r1.yzx;
+    float3 r3 = rsqrt(dot(v2.xyz, v2.xyz)) * v2.zxy;
+    float3 r4 = r1.xyz * r3.zxy;
+    r4 = r1.zxy * r3.xyz - r4;
+    r4 = r4 * v1.www;
+    float3 N;                                  // world normal (game order)
+    N.x = r4.x * nm.x + r2.x;
+    N.y = r4.y * nm.x + r2.y;
+    float n0w = r4.z * nm.x + r2.z;
+    N = float3(r3.y * nm.z + N.x, r3.z * nm.z + N.y, r3.x * nm.z + n0w);
+
+    // ---- season: trees only ----
+    float4 ip = IniParams.Load(int2(0, 0));
+    if (tree_active() && ip.x > 0.5 && ip.y > 0.5 && ip.z > 0.5 && ip.w > 0.5) {
+        float3 ndc = float3(pos.x / ip.z * 2.0 - 1.0, 1.0 - pos.y / ip.w * 2.0, pos.z);
+        float3 w = tree_world(ndc);
+        float T, warm, snowT, ev, wM; tree_climate(w, ip.x, T, warm, snowT, ev, wM);
+        float leaf = leafness(alb);
+        float bare = bareness(T, warm, ev);
+        if (leaf_gone(v3.xy, bare, leaf)) discard;
+        float lum = dot(alb, float3(0.3, 0.59, 0.11));
+        // v23: autumn colours before the leaves fall (red / orange / yellow, a colour per tree), none in the evergreen south
+        float tp = th21(floor(w.xz / 180.0) + 3.1);
+        float3 autC = tp < 0.33 ? float3(0.62, 0.13, 0.05) : tp < 0.70 ? float3(0.74, 0.36, 0.06) : float3(0.74, 0.58, 0.12);
+        float t1 = (T - 11.0) / 3.5;
+        float aut = (1.0 - warm) * exp(-t1 * t1) * leaf * (1.0 - ev);
+        // v26h: the year's rain in the leaves - a dry year: summer leaves a touch yellowed, duller browner autumn colour;
+        //       a wet year: a little deeper green, richer autumn colour. Nothing changes in a normal year.
+        float dryY = saturate((1.0 - wM) * 1.2), wetY = saturate((wM - 1.0) * 1.0);
+        autC = lerp(autC, float3(0.55, 0.30, 0.08), dryY * 0.4);
+        aut = saturate(aut * (1.0 + 0.15 * wetY));
+        alb *= lerp(1.0.xxx, float3(1.04, 0.99, 0.86), dryY * 0.5 * leaf);
+        alb *= lerp(1.0.xxx, float3(0.93, 1.03, 0.90), wetY * 0.5 * leaf);
+        alb = lerp(alb, autC * saturate(lum * 2.6), saturate(aut * 0.9));
+        float3 dry = float3(1.05, 0.80, 0.52) * lum;                  // withered leaves / twigs
+        alb = lerp(alb, dry, saturate(bare * leaf * 1.2));
+        float up = saturate(normalize(N).y * 1.6 - 0.35);
+        // v26k30: snow on the trees only on the cells where the rules have lying snow (thin / deep)
+        float4 wcT = IniParams.Load(int2(100, 0)), dkT = IniParams.Load(int2(60, 0));
+        float rulesT = (wcT.w > 0.5 && abs(wcT.z - 26.0) < 0.5 && dkT.w > 0.5) ? 1.0 : 0.0;
+        float wxT = 0.0; [branch] if (rulesT > 0.5) { gridInit(); wxT = cellWx(hexIdxAt(w.xz)); }
+        float covT = wxBits(wxT, 3.0, 2.0);
+        float snowTT = rulesT > 0.5 ? (covT > 1.5 ? 1.0 : (covT > 0.5 ? 0.62 : 0.0)) : snowT;
+        float sn = snowTT * up * lerp(0.55, 0.85, tvn(v3.xy * 24.0));
+        alb = lerp(alb, float3(0.80, 0.82, 0.86), saturate(sn));
+        // v26c: under the rain the trees go dark and grey with the land (storm light), wet leaves a little darker still
+        float4 wctl = IniParams.Load(int2(100, 0));
+        if (wctl.w > 0.5 && abs(wctl.z - 26.0) < 0.5 && wctl.y > 0.5) {
+            float4 R = tree_rain(w.xz);
+            if (rulesT > 0.5) { R.x = wxBits(wxT, 0.0, 2.0); R.z = wxBits(wxT, 2.0, 1.0); R.y *= step(0.5, R.x); }   // v26k30: wet leaves only under this cell's own rain
+            float rainI = smoothstep(0.35, 0.95, R.x), strength = saturate((R.x - 0.6) / 2.0), snowing = smoothstep(0.3, 0.7, R.z);
+            alb *= 1.0 - 0.18 * max(R.y, rainI * 0.6) * (1.0 - snowing);          // v26d: wet leaves a little darker, nothing more
+        }
+    }
+    o0.xyz = alb;
+
+    float3 rv;
+    rv.y = dot(cb0[1].xyz, N);
+    rv.z = dot(cb0[2].xyz, N);
+    rv.x = dot(cb0[3].xyz, N);
+    o1.xy = octenc(rv);
+    o1.z = 0;
+    float4 rr = t1.Sample(s1, v3.xy);
+    rr = rr * cb0[0];
+    o2 = rr * float4(1.0, 1.0, 1.0, 0.5);
+    o3 = float4(0, 0, 0, 0);
+    o4.xy = octenc(r3);
+    float d = dot(r1.yzx, N);
+    float3 tg = -d * N.zxy + r1.xyz;
+    tg = tg * rsqrt(dot(tg, tg));
+    o4.zw = octenc(tg);
+    o0.w = t2.Sample(s2, v3.xy).x;
+}

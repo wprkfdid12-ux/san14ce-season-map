@@ -1,0 +1,139 @@
+// SAN14 season map: replacement for the alpha-tested shadow/depth shader d28d1d5e4d8d3a3c.
+// Same as the game's unless the draw is a tree (b13 bound by d3dx.ini): then the leaves that
+// fell in the colour pass also stop casting shadow. The shadow camera has no screen of its own,
+// so the climate is taken at the centre of the shadow view.
+cbuffer cb0 : register(b0) { float4 cb0[3]; }      // sbias, nStageNum, vSAMap
+Texture2D<float4> t0 : register(t0);
+SamplerState s0 : register(s0);
+// SAN14 season: trees (shared by the foliage colour pass and its shadow pass)
+// Enabled only for wind-animated tree draws: d3dx.ini binds the tree VS constants to ps-cb13.
+Texture1D<float4> IniParams : register(t120);
+cbuffer TreeVS : register(b13) { float4 tvM[4]; }     // tree VS cb0[0..3] = world -> clip (row vectors)
+
+static const float TPI2 = 6.2831853;
+float th21(float2 p) { p = frac(p * float2(123.34, 456.21)); p += dot(p, p + 45.32); return frac(p.x * p.y); }
+float tvn(float2 p)
+{
+    float2 i = floor(p), f = frac(p); float2 u = f * f * (3.0 - 2.0 * f);
+    float a = th21(i), b = th21(i + float2(1, 0)), c = th21(i + float2(0, 1)), d = th21(i + float2(1, 1));
+    return lerp(lerp(a, b, u.x), lerp(c, d, u.x), u.y);
+}
+bool tree_active() { return any(tvM[0] != 0) || any(tvM[1] != 0); }
+
+float4x4 inv4(float4x4 m)
+{
+    float a00 = m[0][0], a01 = m[0][1], a02 = m[0][2], a03 = m[0][3];
+    float a10 = m[1][0], a11 = m[1][1], a12 = m[1][2], a13 = m[1][3];
+    float a20 = m[2][0], a21 = m[2][1], a22 = m[2][2], a23 = m[2][3];
+    float a30 = m[3][0], a31 = m[3][1], a32 = m[3][2], a33 = m[3][3];
+    float b00 = a00 * a11 - a01 * a10, b01 = a00 * a12 - a02 * a10, b02 = a00 * a13 - a03 * a10;
+    float b03 = a01 * a12 - a02 * a11, b04 = a01 * a13 - a03 * a11, b05 = a02 * a13 - a03 * a12;
+    float b06 = a20 * a31 - a21 * a30, b07 = a20 * a32 - a22 * a30, b08 = a20 * a33 - a23 * a30;
+    float b09 = a21 * a32 - a22 * a31, b10 = a21 * a33 - a23 * a31, b11 = a22 * a33 - a23 * a32;
+    float det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+    float id = abs(det) > 1e-30 ? 1.0 / det : 0.0;
+    float4x4 r;
+    r[0] = float4(a11 * b11 - a12 * b10 + a13 * b09, a02 * b10 - a01 * b11 - a03 * b09, a31 * b05 - a32 * b04 + a33 * b03, a22 * b04 - a21 * b05 - a23 * b03);
+    r[1] = float4(a12 * b08 - a10 * b11 - a13 * b07, a00 * b11 - a02 * b08 + a03 * b07, a32 * b02 - a30 * b05 - a33 * b01, a20 * b05 - a22 * b02 + a23 * b01);
+    r[2] = float4(a10 * b10 - a11 * b08 + a13 * b06, a01 * b08 - a00 * b10 - a03 * b06, a30 * b04 - a31 * b02 + a33 * b00, a21 * b02 - a20 * b04 - a23 * b00);
+    r[3] = float4(a11 * b07 - a10 * b09 - a12 * b06, a00 * b09 - a01 * b07 + a02 * b06, a31 * b01 - a30 * b03 - a32 * b00, a20 * b03 - a21 * b01 + a22 * b00);
+    return r * id;
+}
+// world position of a pixel: ndc = (x, y, depth) ; clip = [world,1] * M
+float3 tree_world(float3 ndc)
+{
+    float4x4 M = float4x4(tvM[0], tvM[1], tvM[2], tvM[3]);
+    float4 h = mul(float4(ndc, 1.0), inv4(M));
+    return h.xyz / (abs(h.w) > 1e-20 ? h.w : 1e-20);
+}
+// v23: climate at a world point from the regional climate map (same as the terrain): T (deg C), warm = warming trend,
+//      snow factor, ev = evergreen country (mild winters)
+Texture2DArray<float4> TexClim : register(t109);
+Texture2D<float4> TexZone : register(t108);           // v24: r = north of the Yellow River
+float zoneNorth(float2 uv)
+{
+    float2 p = saturate(uv) * 512.0 - 0.5;
+    int2 b = int2(floor(p)); float2 f = p - b;
+    int2 b0 = clamp(b, 0, 511), b1 = clamp(b + 1, 0, 511);
+    float a = TexZone.Load(int3(b0.x, b0.y, 0)).r, c = TexZone.Load(int3(b1.x, b0.y, 0)).r;
+    float d = TexZone.Load(int3(b0.x, b1.y, 0)).r, e = TexZone.Load(int3(b1.x, b1.y, 0)).r;
+    return lerp(lerp(a, c, f.x), lerp(d, e, f.x), f.y);
+}
+float4 tclimAt(float2 uv, int sl)
+{
+    float2 p = saturate(uv) * 128.0 - 0.5;
+    int2 b = int2(floor(p)); float2 f = p - b;
+    int2 b0 = clamp(b, 0, 127), b1 = clamp(b + 1, 0, 127);
+    float4 a = TexClim.Load(int4(b0.x, b0.y, sl, 0)), c = TexClim.Load(int4(b1.x, b0.y, sl, 0));
+    float4 d = TexClim.Load(int4(b0.x, b1.y, sl, 0)), e = TexClim.Load(int4(b1.x, b1.y, sl, 0));
+    return lerp(lerp(a, c, f.x), lerp(d, e, f.x), f.y);
+}
+// v26h: the year's weather nodes the rules module writes (list entries base..base+20, 9x9 over the map), as the ground reads them
+float tnodeAt(int base, float2 uv)
+{
+    float fx = saturate(uv.x) * 8.0, fy = saturate(uv.y) * 8.0; float x0 = min(floor(fx), 7.0), y0 = min(floor(fy), 7.0); float ax = fx - x0, ay = fy - y0;
+    float k00 = y0 * 9.0 + x0, k10 = k00 + 1.0, k01 = k00 + 9.0, k11 = k01 + 1.0;
+    float4 q00 = IniParams.Load(int2(base + (int)floor((k00 + 0.5) / 4.0), 0)); float v00 = q00[(int)(k00 - floor((k00 + 0.5) / 4.0) * 4.0)];
+    float4 q10 = IniParams.Load(int2(base + (int)floor((k10 + 0.5) / 4.0), 0)); float v10 = q10[(int)(k10 - floor((k10 + 0.5) / 4.0) * 4.0)];
+    float4 q01 = IniParams.Load(int2(base + (int)floor((k01 + 0.5) / 4.0), 0)); float v01 = q01[(int)(k01 - floor((k01 + 0.5) / 4.0) * 4.0)];
+    float4 q11 = IniParams.Load(int2(base + (int)floor((k11 + 0.5) / 4.0), 0)); float v11 = q11[(int)(k11 - floor((k11 + 0.5) / 4.0) * 4.0)];
+    return lerp(lerp(v00, v10, ax), lerp(v01, v11, ax), ay);
+}
+void tree_climate(float3 w, float month, out float T, out float warm, out float snowT, out float ev, out float wM)
+{
+    float2 uv = saturate(w.xz / 204800.0);
+    float4 ip1 = IniParams.Load(int2(1, 0));
+    float xun = (ip1.x >= 0.0 && ip1.x <= 2.0) ? round(ip1.x) : 1.0;
+    // v26h: the same calendar as the ground (v25.9i: KOEI's seasons - game month m shows the real climate of month m+2);
+    //       until now the trees read the real month m and ran two months behind the land
+    float tpos = clamp(round(month), 1.0, 12.0) + 1.0 + (xun - 1.0) / 3.0, tfl = floor(tpos);
+    float4 cl = lerp(tclimAt(uv, ((int)tfl + 12) % 12), tclimAt(uv, ((int)tfl + 13) % 12), tpos - tfl);   // v24: by turn
+    float lapse = 0.0045 * max(w.y - 750.0, 0.0);
+    // v26h: the year's weather (the nodes the ground reads): a warm / cold year moves leaf-out, autumn colour and leaf fall a
+    //       little earlier / later (limited to 2.5 C ~ about ten days), a dry year brings the colour and the fall a touch earlier.
+    //       A normal year (anomaly 0, rain x1) is exactly what it was.
+    float4 wctl = IniParams.Load(int2(100, 0));
+    float wdT = 0.0; wM = 1.0;
+    [branch] if (wctl.w > 0.5 && abs(wctl.z - 26.0) < 0.5) { wdT = clamp(tnodeAt(101, uv), -2.5, 2.5); wM = clamp(tnodeAt(122, uv), 0.4, 1.8); }
+    float Tw = cl.r - lapse + wdT;
+    T = Tw - 0.8 * max(0.0, 1.0 - wM);
+    warm = smoothstep(-1.5, 1.5, cl.g);
+    snowT = smoothstep(2.0, -9.0, Tw - 4.0 * zoneNorth(uv));                    // v24: snow 4 C colder north of the Yellow River
+    ev = smoothstep(2.0, 6.5, cl.a - lapse);
+}
+// how much of this texel is broadleaf (deciduous) foliage: green, not grey-green needles
+float leafness(float3 c)
+{
+    float mx = max(c.r, max(c.g, c.b)), mn = min(c.r, min(c.g, c.b));
+    float green = saturate((c.g - max(c.r, c.b)) / max(mx, 1e-3) * 8.0);
+    float everg = smoothstep(0.50, 0.70, mn / max(mx, 1e-3));
+    return green * (1.0 - everg);
+}
+// leaf-off amount for this climate: autumn leaf fall ~T 9->3, spring leaf-out a little later
+float bareness(float T, float warm, float ev) { return smoothstep(9.0 + 2.0 * warm, 3.0 + 2.0 * warm, T) * (1.0 - 0.6 * ev); }
+// 1 = this foliage texel is gone (leaves fallen)
+bool leaf_gone(float2 uv, float bare, float leaf)
+{
+    float n = tvn(uv * 40.0) * 0.55 + tvn(uv * 160.0 + 7.3) * 0.25 + th21(floor(uv * 512.0)) * 0.20;
+    return n < bare * leaf * 0.93;
+}
+
+void main(float4 pos : SV_Position, float2 v1 : TEXCOORD0)
+{
+    float a;
+    float4 tex = 0;
+    if (0 < cb0[1].x) {
+        tex = t0.Sample(s0, v1.xy);
+        a = saturate(tex.w * cb0[2].y + cb0[2].z);
+    } else {
+        a = 1.0;
+    }
+    if (a - cb0[0].w < 0) discard;
+
+    float4 ip = IniParams.Load(int2(0, 0));
+    if (tree_active() && ip.x > 0.5 && ip.y > 0.5 && 0 < cb0[1].x) {
+        float3 w = tree_world(float3(0.0, 0.0, 0.5));
+        float T, warm, snowT, ev, wM; tree_climate(w, ip.x, T, warm, snowT, ev, wM);
+        if (leaf_gone(v1.xy, bareness(T, warm, ev), leafness(tex.xyz))) discard;
+    }
+}

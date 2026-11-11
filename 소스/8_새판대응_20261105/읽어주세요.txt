@@ -1,0 +1,9 @@
+v26k41: 게임 2026-11-05 업데이트(stamp 6ad06f53) 대응 작업 자료
+- ledger.tsv : 계절 규칙 DLL 이 쓰는 1.0.1 자리 목록 (옛 판 기준)
+- fn.py      : 옛 판/새 판 해제본 exe 를 함수 단위로 맞춰 자리를 옮기는 도구 (통합패치 find_new 와 같은 방식)
+               python3 fn.py <1.0.1 해제본.exe> <새 판 해제본.exe> ledger.tsv <출력폴더>
+- 자리_대응.tsv / 요약.txt : 그 결과 (못찾음 3곳은 손으로: 이속 함수 0x2b2550(컴파일러가 다시 짬, 인자·결과 같음),
+               병량 함수 0x22e1d0(같은 두 명령, 다른 클래스와 공유), 길찾기 버퍼 0x1bbab50(곱셈 기준 자리))
+- peload.c   : 실제 SAN14_SeasonRules.dll 을 리눅스에서 진짜 게임 exe 이미지 위에 올려 SAN14_SeasonSelfHost 로 켜 보는 시험기
+               gcc -O1 -o peload peload.c -lpthread ; ./peload <dll> <해제본 exe> <작업폴더> [r43] [ai]
+               (r43 = 통합패치가 글자 함수 +9 와 길 비용 호출에 거는 점프 흉내, ai = AI 모드의 이속 함수 점프 흉내)

@@ -1,0 +1,788 @@
+// SAN14 season map v20: territory colour overlay (faction colours / front lines) = the game's own drawing,
+//   rebuilt so every value keeps its exact bits (v14-v19 lost small whole numbers on the way and drew stray
+//   triangles). One change: on steep mountain walls the near-black border teeth are not drawn.
+// v26k45: (1) the near-black band/fill the game lays on land nobody owns (rivers, impassable ground - with the faction colours on,
+//         at the farthest zoom it covers the whole cell) is never drawn: before, it was left out on steep ground only, so the far
+//         map was black here and terrain there. The land shows as it is, the same everywhere.
+//         (2) with the faction colours on, the faction colour lies at half strength on the poison swamp (독늪), so the swamp's
+//         purple shows through it (season_forest.dds green = the game's own swamp ground, also used by the ground shaders).
+SamplerState s1 : register(s1);
+SamplerState s2 : register(s2);
+SamplerState s3 : register(s3);
+SamplerState s4 : register(s4);
+SamplerState s5 : register(s5);
+Texture2D<float4> t0 : register(t0);
+Texture2D<float4> t1 : register(t1);
+Texture2D<float4> t2 : register(t2);
+Texture2DArray<float4> t3 : register(t3);
+Texture2D<float4> t4 : register(t4);
+Texture2D<float4> t5 : register(t5);
+Buffer<uint4> t15 : register(t15);
+cbuffer cb0 : register(b0) { float4 cb0[411]; }
+Texture2D<float4> TexForest : register(t119);           // v26k45: green = the poison swamp's ground (bound by d3dx.ini)
+float swampAt(float2 wxz)                              // world x/z -> the swamp weight (the height map: 100 world units a texel
+{                                                      // of 2048; the mask is 1024 - bilinear by hand, no sampler needed)
+    float2 p = wxz / 200.0 - 0.5;
+    if (p.x < 0.0 || p.y < 0.0 || p.x > 1022.0 || p.y > 1022.0) return 0.0;
+    int2 i = int2(floor(p)); float2 f = p - floor(p);
+    float a = TexForest.Load(int3(i, 0)).g, b = TexForest.Load(int3(i + int2(1, 0), 0)).g;
+    float c = TexForest.Load(int3(i + int2(0, 1), 0)).g, d = TexForest.Load(int3(i + int2(1, 1), 0)).g;
+    return lerp(lerp(a, b, f.x), lerp(c, d, f.x), f.y);
+}
+
+
+void main(float4 v0 : SV_Position,
+          float4 v1 : TEXCOORD0,
+          out float4 o0 : SV_Target0,
+          out float4 o1 : SV_Target1,
+          out float4 o2 : SV_Target2,
+          out float4 o3 : SV_Target3)
+{
+    o0 = 0;
+    o1 = 0;
+    o2 = 0;
+    o3 = 0;
+    uint4 r0 = 0, r1 = 0, r2 = 0, r3 = 0, r4 = 0, r5 = 0, r6 = 0, r7 = 0, r8 = 0, r9 = 0, r10 = 0, r11 = 0, r12 = 0, r13 = 0, r14 = 0, r15 = 0, r16 = 0, r17 = 0, r18 = 0;
+    r0.xy = asuint((v1.xy) * (float2(0.5,-0.5)) + (float2(0.5,0.5)));
+    r0.z = asuint((t1.SampleLevel(s1, (asfloat(r0.xy)), (0.0))).x);
+    r0.w = (uint)((asfloat(r0.z)) == (1.0)) * 0xffffffffu;
+    if (((r0.w) != 0)) discard;
+    if (((r0.w) != 0)) discard;
+    r1.xyzw = asuint((t4.SampleLevel(s4, (asfloat(r0.xy)), (0.0))).xyzw);
+    r2.xyzw = asuint((t5.SampleLevel(s5, (asfloat(r0.xy)), (0.0))).xyzw);
+    r3.xyzw = asuint((v1.yyyy) * (cb0[5].xyzw));
+    r3.xyzw = asuint((v1.xxxx) * (cb0[4].xyzw) + (asfloat(r3.xyzw)));
+    r3.xyzw = asuint((asfloat(r0.zzzz)) * (cb0[6].xyzw) + (asfloat(r3.xyzw)));
+    r3.xyzw = asuint((asfloat(r3.xyzw)) + (cb0[7].xyzw));
+    r3.xyz = asuint((asfloat(r3.xyz)) / (asfloat(r3.www)));
+    float2 sanWorld = asfloat(r3.xz);                  // v26k45: the world point (r3 is reused below)
+    r0.xyzw = asuint((t2.SampleLevel(s2, (asfloat(r0.xy)), (0.0))).xyzw);
+    r4.xy = asuint((v1.xy) * (float2(0.5,-0.5)) + (float2(0.5,0.5)));
+    r4.z = (0u);
+    r4.xyzw = asuint((t3.SampleLevel(s3, (asfloat(r4.xyz)), (0.0))).xyzw);
+    r3.w = asuint((asfloat(r4.w)) + (asfloat(r4.w)));
+    r1.xy = asuint((asfloat(r1.xy)) * (float2(2.0,2.0)) + (float2(-1.0,-1.0)));
+    r5.xyz = asuint((-abs(asfloat(r1.xyx))) + (float3(1.0,1.0,1.0)));
+    r6.z = asuint((-abs(asfloat(r1.y))) + (asfloat(r5.x)));
+    r4.w = (uint)((asfloat(r6.z)) >= (0.0)) * 0xffffffffu;
+    r5.xw = (uint2)((asfloat(r1.xy)) >= (float2(0.0,0.0))) * 0xffffffffu;
+    r5.xw = ((r5.xw) != 0) ? (uint2(1065353216u,1065353216u)) : (uint2(3212836864u,3212836864u));
+    r5.xy = asuint((asfloat(r5.xw)) * (asfloat(r5.yz)));
+    r6.xy = ((r4.ww) != 0) ? (r1.xy) : (r5.xy);
+    r1.x = asuint(dot((asfloat(r6.xyz)), (asfloat(r6.xyz))));
+    r1.x = asuint(rsqrt((asfloat(r1.x))));
+    r5.xyz = asuint((asfloat(r1.xxx)) * (asfloat(r6.xyz)));
+    r6.xyz = asuint((asfloat(r5.yyy)) * (cb0[1].xyz));
+    r5.xyw = asuint((asfloat(r5.xxx)) * (cb0[0].xyz) + (asfloat(r6.xyz)));
+    r5.xyz = asuint((asfloat(r5.zzz)) * (cb0[2].xyz) + (asfloat(r5.xyw)));
+    r1.x = (uint)((asfloat(r3.y)) >= (cb0[12].z)) * 0xffffffffu;
+    if (((r1.x) != 0)) {
+        r1.xy = asuint((cb0[279].zz) * (float2(0.5,0.8660253882408142)));
+        r3.y = asuint((asfloat(r3.x)) + (cb0[279].z));
+        r3.y = asuint((asfloat(r3.y)) + (-cb0[12].x));
+        r4.w = asuint((cb0[279].z) * (0.8660253882408142) + (asfloat(r3.z)));
+        r4.w = asuint((asfloat(r4.w)) + (-cb0[12].y));
+        r3.y = asuint((asfloat(r3.y)) / (asfloat(r1.x)));
+        r5.w = asuint(floor((asfloat(r3.y))));
+        r5.w = asuint((int)(asfloat(r5.w)));
+        r6.x = asuint((asfloat(r4.w)) / (asfloat(r1.y)));
+        r6.x = asuint(floor((asfloat(r6.x))));
+        r6.y = asuint((int)(asfloat(r6.x)));
+        r7.x = ((r5.w) / (3u));
+        r5.w = ((r5.w) % (6u));
+        r6.z = ((r5.w) % (3u));
+        if (!((r6.z) != 0)) {
+            r6.w = (uint)((asfloat(r3.y)) >= (-asfloat(r3.y))) * 0xffffffffu;
+            r3.y = asuint(frac((abs(asfloat(r3.y)))));
+            r3.y = asuint(((r6.w) != 0) ? (asfloat(r3.y)) : (-asfloat(r3.y)));
+            r3.y = asuint((asfloat(r1.x)) * (asfloat(r3.y)));
+            r3.y = asuint((asfloat(r3.y)) / (asfloat(r1.x)));
+            r4.w = asuint((cb0[279].z) * (0.8660253882408142) + (asfloat(r4.w)));
+            r4.w = asuint((asfloat(r4.w)) / (asfloat(r1.y)));
+            r6.w = (uint)((asfloat(r4.w)) >= (-asfloat(r4.w))) * 0xffffffffu;
+            r4.w = asuint(frac((abs(asfloat(r4.w)))));
+            r4.w = asuint(((r6.w) != 0) ? (asfloat(r4.w)) : (-asfloat(r4.w)));
+            r4.w = asuint((asfloat(r1.y)) * (asfloat(r4.w)));
+            r4.w = asuint((asfloat(r4.w)) / (asfloat(r1.y)));
+            r8.xy = asuint((asint(r6.yy)) + (int2(2,1)));
+            r6.w = (r8.x) & (1u);
+            r6.w = asuint((float)(r6.w));
+            r7.w = asuint((asfloat(r4.w)) * (2.0) + (-1.0));
+            r6.w = asuint((asfloat(r6.w)) * (asfloat(r7.w)) + (1.0));
+            r4.w = asuint((-asfloat(r4.w)) + (asfloat(r6.w)));
+            r6.w = (uint)((asint(r5.w)) == (3)) * 0xffffffffu;
+            r7.w = asuint((-asfloat(r3.y)) + (1.0));
+            r3.y = ((r6.w) != 0) ? (r7.w) : (r3.y);
+            r3.y = (uint)((asfloat(r4.w)) < (asfloat(r3.y))) * 0xffffffffu;
+            r9.x = asuint((asint(r6.w)) + (asint(r7.x)));
+            r4.w = asuint((asfloat(r6.x)) * (0.5));
+            r4.w = asuint(floor((asfloat(r4.w))));
+            r9.y = asuint((int)(asfloat(r4.w)));
+            r9.z = ((r3.y) != 0) ? (r9.x) : (r7.x);
+            r4.w = asuint((asint(r9.z)) + (-1));
+            r10.xz = ((r5.ww) != 0) ? (r9.zz) : (r4.ww);
+            r4.w = asuint((float)(asint(r8.y)));
+            r4.w = asuint((asfloat(r4.w)) * (0.5));
+            r4.w = asuint(floor((asfloat(r4.w))));
+            r10.y = asuint((int)(asfloat(r4.w)));
+            r7.xyz = ((r3.yyy) != 0) ? (r9.zxy) : (r10.zxy);
+            r8.xy = (r7.yz);
+        }
+        r3.y = (uint)((asint(r5.w)) < (3)) * 0xffffffffu;
+        r4.w = asuint((asfloat(r6.x)) * (0.5));
+        r4.w = asuint(floor((asfloat(r4.w))));
+        r7.y = asuint((int)(asfloat(r4.w)));
+        r4.w = asuint((asint(r6.y)) + (1));
+        r4.w = asuint((float)(asint(r4.w)));
+        r4.w = asuint((asfloat(r4.w)) * (0.5));
+        r4.w = asuint(floor((asfloat(r4.w))));
+        r7.z = asuint((int)(asfloat(r4.w)));
+        r6.xy = ((r3.yy) != 0) ? (r7.xy) : (r7.xz);
+        r6.xy = ((r6.zz) != 0) ? (r6.xy) : (r8.xy);
+        r7.xy = (uint2)((asint(r6.xy)) >= (int2(-1,-1))) * 0xffffffffu;
+        r3.y = (r7.y) & (r7.x);
+        r7.xy = asuint((float2)(asint(r6.xy)));
+        r7.zw = asuint((cb0[279].xy) + (float2(1.0,1.0)));
+        r7.zw = (uint2)((asfloat(r7.xy)) < (asfloat(r7.zw))) * 0xffffffffu;
+        r3.y = (r3.y) & (r7.z);
+        r3.y = (r7.w) & (r3.y);
+        if (((r3.y) != 0)) {
+            r3.y = asuint((asfloat(r1.x)) * (asfloat(r7.x)));
+            r4.w = asuint(dot((asfloat(r7.yy)), (asfloat(r1.yy))));
+            r5.w = (r6.x) & (1u);
+            r7.z = asuint((float)(r5.w));
+            r4.w = asuint((-asfloat(r7.z)) * (asfloat(r1.y)) + (asfloat(r4.w)));
+            r8.y = asuint((asfloat(r3.y)) * (3.0) + (cb0[12].x));
+            r8.x = asuint((asfloat(r4.w)) + (cb0[12].y));
+            r3.xy = asuint((asfloat(r3.zx)) + (-asfloat(r8.xy)));
+            r3.z = asuint(min((abs(asfloat(r3.y))), (abs(asfloat(r3.x)))));
+            r4.w = asuint(max((abs(asfloat(r3.y))), (abs(asfloat(r3.x)))));
+            r4.w = asuint((1.0) / (asfloat(r4.w)));
+            r3.z = asuint((asfloat(r3.z)) * (asfloat(r4.w)));
+            r4.w = asuint((asfloat(r3.z)) * (asfloat(r3.z)));
+            r7.z = asuint((asfloat(r4.w)) * (0.02083509974181652) + (-0.08513300120830536));
+            r7.z = asuint((asfloat(r4.w)) * (asfloat(r7.z)) + (0.18014100193977356));
+            r7.z = asuint((asfloat(r4.w)) * (asfloat(r7.z)) + (-0.3302994966506958));
+            r4.w = asuint((asfloat(r4.w)) * (asfloat(r7.z)) + (0.9998660087585449));
+            r7.z = asuint((asfloat(r3.z)) * (asfloat(r4.w)));
+            r7.w = (uint)((abs(asfloat(r3.y))) < (abs(asfloat(r3.x)))) * 0xffffffffu;
+            r7.z = asuint((asfloat(r7.z)) * (-2.0) + (1.5707963705062866));
+            r7.z = (r7.w) & (r7.z);
+            r3.z = asuint((asfloat(r3.z)) * (asfloat(r4.w)) + (asfloat(r7.z)));
+            r4.w = (uint)((asfloat(r3.y)) < (-asfloat(r3.y))) * 0xffffffffu;
+            r4.w = (r4.w) & (3226013659u);
+            r3.z = asuint((asfloat(r3.z)) + (asfloat(r4.w)));
+            r4.w = asuint(min((asfloat(r3.y)), (asfloat(r3.x))));
+            r7.z = asuint(max((asfloat(r3.y)), (asfloat(r3.x))));
+            r4.w = (uint)((asfloat(r4.w)) < (-asfloat(r4.w))) * 0xffffffffu;
+            r7.z = (uint)((asfloat(r7.z)) >= (-asfloat(r7.z))) * 0xffffffffu;
+            r4.w = (r4.w) & (r7.z);
+            r3.z = asuint(((r4.w) != 0) ? (-asfloat(r3.z)) : (asfloat(r3.z)));
+            r3.z = asuint((asfloat(r3.z)) + (3.141592025756836));
+            r3.z = asuint((asfloat(r3.z)) * (0.9549298286437988));
+            r3.z = asuint(floor((asfloat(r3.z))));
+            r3.z = asuint((int)(asfloat(r3.z)));
+            r4.w = asuint((-asint(r3.z)) + (10));
+            r4.w = ((r4.w) % (6u));
+            r4.w = asuint((float)(asint(r4.w)));
+            r4.w = asuint((asfloat(r4.w)) * (1.0471973419189453));
+            r8.x = asuint(sin((asfloat(r4.w))));
+            r9.x = asuint(cos((asfloat(r4.w))));
+            r7.zw = asuint((asfloat(r3.xy)) * (asfloat(r8.xx)));
+            r8.x = asuint((asfloat(r3.y)) * (asfloat(r9.x)) + (-asfloat(r7.z)));
+            r8.y = asuint((asfloat(r3.x)) * (asfloat(r9.x)) + (asfloat(r7.w)));
+            r3.x = asuint((-cb0[282].x) + (1.0));
+            r3.y = asuint((asfloat(r1.x)) * (asfloat(r3.x)));
+            r4.w = asuint((asfloat(r1.y)) * (cb0[282].x));
+            r7.z = (uint)((0.0) < (asfloat(r8.x))) * 0xffffffffu;
+            r7.w = (uint)((asfloat(r8.x)) < (0.0)) * 0xffffffffu;
+            r7.z = asuint((-asint(r7.z)) + (asint(r7.w)));
+            r7.w = asuint((float)(asint(r7.z)));
+            r1.x = asuint((asfloat(r1.x)) * (asfloat(r7.w)));
+            r9.x = asuint((asfloat(r3.x)) * (asfloat(r1.x)));
+            r9.y = asuint((cb0[279].z) * (0.8660253882408142) + (-asfloat(r4.w)));
+            r1.x = (uint)((asfloat(r3.y)) < (abs(asfloat(r8.x)))) * 0xffffffffu;
+            r1.x = (r7.z) & (r1.x);
+            if (!((r3.z) != 0)) {
+                r3.x = asuint((asint(r6.x)) + (-1));
+                r3.y = asuint((-asint(r5.w)) + (asint(r6.y)));
+            } else {
+                r7.z = (uint)((asint(r3.z)) == (1)) * 0xffffffffu;
+                if (((r7.z) != 0)) {
+                    r3.y = asuint((asint(r6.y)) + (-1));
+                    r3.x = (r6.x);
+                } else {
+                    r10.y = asuint((-asint(r5.w)) + (asint(r6.y)));
+                    r11.w = asuint((asint(r10.y)) + (1));
+                    r12.xyzw = (uint4)((asint(r3.zzzz)) == (int4(2,3,4,5))) * 0xffffffffu;
+                    r11.xyz = asuint((asint(r6.xyx)) + (int3(1,1,-1)));
+                    r7.zw = ((r12.ww) != 0) ? (r11.zw) : (r6.xy);
+                    r6.z = (r11.y);
+                    r7.zw = ((r12.zz) != 0) ? (r6.xz) : (r7.zw);
+                    r7.zw = ((r12.yy) != 0) ? (r11.xw) : (r7.zw);
+                    r10.x = (r11.x);
+                    r3.xy = ((r12.xx) != 0) ? (r10.xy) : (r7.zw);
+                }
+            }
+            r7.zw = asuint((asint(r3.zz)) + (int2(1,5)));
+            r7.zw = ((r7.zw) % (uint2(6u,6u)));
+            if (!((r7.z) != 0)) {
+                r8.z = asuint((asint(r6.x)) + (-1));
+                r8.w = asuint((-asint(r5.w)) + (asint(r6.y)));
+            } else {
+                r3.z = (uint)((asint(r7.z)) == (1)) * 0xffffffffu;
+                if (((r3.z) != 0)) {
+                    r8.w = asuint((asint(r6.y)) + (-1));
+                    r8.z = (r6.x);
+                } else {
+                    r10.y = asuint((-asint(r5.w)) + (asint(r6.y)));
+                    r11.w = asuint((asint(r10.y)) + (1));
+                    r12.xyzw = (uint4)((asint(r7.zzzz)) == (int4(2,3,4,5))) * 0xffffffffu;
+                    r11.xyz = asuint((asint(r6.xyx)) + (int3(1,1,-1)));
+                    r10.zw = ((r12.ww) != 0) ? (r11.zw) : (r6.xy);
+                    r6.w = (r11.y);
+                    r6.zw = ((r12.zz) != 0) ? (r6.xw) : (r10.zw);
+                    r6.zw = ((r12.yy) != 0) ? (r11.xw) : (r6.zw);
+                    r10.x = (r11.x);
+                    r8.zw = ((r12.xx) != 0) ? (r10.xy) : (r6.zw);
+                }
+            }
+            if (!((r7.w) != 0)) {
+                r6.z = asuint((asint(r6.x)) + (-1));
+                r6.w = asuint((-asint(r5.w)) + (asint(r6.y)));
+            } else {
+                r3.z = (uint)((asint(r7.w)) == (1)) * 0xffffffffu;
+                if (((r3.z) != 0)) {
+                    r6.w = asuint((asint(r6.y)) + (-1));
+                    r6.z = (r6.x);
+                } else {
+                    r10.w = asuint((-asint(r5.w)) + (asint(r6.y)));
+                    r11.w = asuint((asint(r10.w)) + (1));
+                    r12.xyzw = (uint4)((asint(r7.wwww)) == (int4(2,3,4,5))) * 0xffffffffu;
+                    r11.xyz = asuint((asint(r6.xyx)) + (int3(1,1,-1)));
+                    r7.zw = ((r12.ww) != 0) ? (r11.zw) : (r6.xy);
+                    r10.x = (r6.x);
+                    r10.yz = (r11.yx);
+                    r7.zw = ((r12.zz) != 0) ? (r10.xy) : (r7.zw);
+                    r7.zw = ((r12.yy) != 0) ? (r11.xw) : (r7.zw);
+                    r6.zw = ((r12.xx) != 0) ? (r10.zw) : (r7.zw);
+                }
+            }
+            r6.xy = (uint2)((asint(r6.xy)) >= (int2(0,0))) * 0xffffffffu;
+            r7.zw = (uint2)((asfloat(r7.xy)) < (cb0[279].xy)) * 0xffffffffu;
+            r3.z = (r6.x) & (r7.z);
+            r3.z = (r6.y) & (r3.z);
+            r3.z = (r7.w) & (r3.z);
+            r5.w = (uint)((asint(r3.x)) >= (0)) * 0xffffffffu;
+            r3.x = asuint((float)(asint(r3.x)));
+            r6.x = (uint)((asfloat(r3.x)) < (cb0[279].x)) * 0xffffffffu;
+            r5.w = (r5.w) & (r6.x);
+            r6.x = (uint)((asint(r3.y)) >= (0)) * 0xffffffffu;
+            r5.w = (r5.w) & (r6.x);
+            r3.y = asuint((float)(asint(r3.y)));
+            r6.x = (uint)((asfloat(r3.y)) < (cb0[279].y)) * 0xffffffffu;
+            r5.w = (r5.w) & (r6.x);
+            r6.x = (uint)((asint(r8.z)) >= (0)) * 0xffffffffu;
+            r6.y = asuint((float)(asint(r8.z)));
+            r7.z = (uint)((asfloat(r6.y)) < (cb0[279].x)) * 0xffffffffu;
+            r6.x = (r6.x) & (r7.z);
+            r7.z = (uint)((asint(r8.w)) >= (0)) * 0xffffffffu;
+            r6.x = (r6.x) & (r7.z);
+            r7.z = asuint((float)(asint(r8.w)));
+            r7.w = (uint)((asfloat(r7.z)) < (cb0[279].y)) * 0xffffffffu;
+            r6.x = (r6.x) & (r7.w);
+            r7.w = (uint)((asint(r6.z)) >= (0)) * 0xffffffffu;
+            r6.z = asuint((float)(asint(r6.z)));
+            r8.z = (uint)((asfloat(r6.z)) < (cb0[279].x)) * 0xffffffffu;
+            r7.w = (r7.w) & (r8.z);
+            r8.z = (uint)((asint(r6.w)) >= (0)) * 0xffffffffu;
+            r7.w = (r7.w) & (r8.z);
+            r6.w = asuint((float)(asint(r6.w)));
+            r8.z = (uint)((asfloat(r6.w)) < (cb0[279].y)) * 0xffffffffu;
+            r7.w = (r7.w) & (r8.z);
+            r8.z = asuint((cb0[279].w) + (cb0[279].w));
+            r8.z = (uint)(asfloat(r8.z));
+            r8.z = asuint((1) << ((r8.z) & 31));
+            r8.w = (uint)(cb0[279].w);
+            r7.x = asuint((asfloat(r7.y)) * (cb0[279].x) + (asfloat(r7.x)));
+            r3.x = asuint((asfloat(r3.y)) * (cb0[279].x) + (asfloat(r3.x)));
+            r3.y = asuint((asfloat(r7.z)) * (cb0[279].x) + (asfloat(r6.y)));
+            r6.y = asuint((asfloat(r6.w)) * (cb0[279].x) + (asfloat(r6.z)));
+            r6.z = (uint)((cb0[282].x) == (0.0)) * 0xffffffffu;
+            r9.z = asuint((asfloat(r4.w)) * (2.0) + (asfloat(r9.y)));
+            r6.w = asuint((asfloat(r9.x)) * (0.5000001788139343));
+            r7.yz = asuint((-asfloat(r9.yy)) * (float2(-0.8660253286361694,0.8660253286361694)) + (asfloat(r6.ww)));
+            r10.xy = asuint((asfloat(r8.yy)) * (float2(-0.8660253286361694,0.8660253286361694)));
+            r10.xy = asuint((asfloat(r8.xx)) * (float2(0.5000001788139343,0.5000001788139343)) + (-asfloat(r10.xy)));
+            r6.w = (uint)((asfloat(r10.x)) < (asfloat(r7.y))) * 0xffffffffu;
+            r10.xzw = asuint((asfloat(r9.zzz)) * (float3(0.8660253286361694,0.5000001788139343,-0.8660253286361694)));
+            r11.xy = asuint((asfloat(r9.xx)) * (float2(-0.5000001788139343,-0.5000001788139343)) + (-asfloat(r10.xw)));
+            r11.zw = asuint((asfloat(r9.xx)) * (float2(-0.8660253286361694,0.8660253286361694)) + (asfloat(r10.zz)));
+            r11.xyzw = asuint((-asfloat(r8.xyxy)) + (asfloat(r11.xzyw)));
+            r7.y = asuint(dot((asfloat(r11.xy)), (asfloat(r11.xy))));
+            r7.y = asuint(sqrt((asfloat(r7.y))));
+            r7.z = (uint)((asfloat(r7.z)) < (asfloat(r10.y))) * 0xffffffffu;
+            r9.w = asuint(dot((asfloat(r11.zw)), (asfloat(r11.zw))));
+            r9.w = asuint(sqrt((asfloat(r9.w))));
+            r10.xy = asuint((-asfloat(r8.xy)) + (asfloat(r9.xy)));
+            r10.x = asuint(dot((asfloat(r10.xy)), (asfloat(r10.xy))));
+            r10.x = asuint(sqrt((asfloat(r10.x))));
+            r10.y = (uint)((asfloat(r10.x)) < (asfloat(r4.w))) * 0xffffffffu;
+            r4.w = (uint)((asfloat(r10.x)) >= (asfloat(r4.w))) * 0xffffffffu;
+            r10.z = (uint)((asfloat(r9.y)) < (asfloat(r8.y))) * 0xffffffffu;
+            r4.w = (r4.w) & (r10.z);
+            r9.y = (uint)((asfloat(r8.y)) < (asfloat(r9.y))) * 0xffffffffu;
+            r9.y = (r9.y) | (r10.y);
+            r11.xyzw = (uint4(0u,0u,0u,0u));
+            r12.xyzw = (uint4(0u,0u,0u,0u));
+            r10.z = (4294967295u);
+            r10.w = (r1.x);
+            r13.xy = (r8.zw);
+            r13.z = (0u);
+            [loop] while (true) {
+                r13.w = (uint)((0u) >= (r13.y)) * 0xffffffffu;
+                r13.z = (0u);
+                if (((r13.w) != 0)) break;
+                r13.w = (r13.x) >> ((1u) & 31);
+                r14.x = (r13.w) | (r13.x);
+                r14.x = (r14.x) & (asuint(cb0[282].y));
+                r14.x = (uint)((asint(r14.x)) != (0)) * 0xffffffffu;
+                r14.y = (uint)((1.1920929864572827e-05) >= (abs(asfloat(r12.w)))) * 0xffffffffu;
+                r14.x = (r14.y) & (r14.x);
+                if (((r14.x) != 0)) {
+                    r14.x = asuint((asint(r13.y)) + (-1));
+                    r14.x = asuint((float)(r14.x));
+                    r14.x = asuint((asfloat(r14.x)) * (cb0[279].x));
+                    r14.x = asuint((asfloat(r14.x)) * (cb0[279].y));
+                    r14.x = (uint)(asfloat(r14.x));
+                    if (((r3.z) != 0)) {
+                        r14.y = asuint((float)(r14.x));
+                        r14.y = asuint((asfloat(r7.x)) + (asfloat(r14.y)));
+                        r14.y = (uint)(asfloat(r14.y));
+                        r14.y = (t15.Load((asint(r14.y)))).x;
+                    } else {
+                        r14.y = (255u);
+                    }
+                    if (((r5.w) != 0)) {
+                        r14.z = asuint((float)(r14.x));
+                        r14.z = asuint((asfloat(r3.x)) + (asfloat(r14.z)));
+                        r14.z = (uint)(asfloat(r14.z));
+                        r14.z = (t15.Load((asint(r14.z)))).x;
+                    } else {
+                        r14.z = (255u);
+                    }
+                    if (((r6.x) != 0)) {
+                        r14.w = asuint((float)(r14.x));
+                        r14.w = asuint((asfloat(r3.y)) + (asfloat(r14.w)));
+                        r14.w = (uint)(asfloat(r14.w));
+                        r14.w = (t15.Load((asint(r14.w)))).x;
+                    } else {
+                        r14.w = (255u);
+                    }
+                    if (((r7.w) != 0)) {
+                        r14.x = asuint((float)(r14.x));
+                        r14.x = asuint((asfloat(r6.y)) + (asfloat(r14.x)));
+                        r14.x = (uint)(asfloat(r14.x));
+                        r14.x = (t15.Load((asint(r14.x)))).x;
+                    } else {
+                        r14.x = (255u);
+                    }
+                    r15.x = (1u) & (asuint(cb0[283 + asint((asfloat(r14.y)))].x));
+                    r15.x = (uint)((asint(r15.x)) == (0)) * 0xffffffffu;
+                    r15.x = (r10.z) & (r15.x);
+                    if (!((r10.w) != 0)) {
+                        r15.y = (r13.x) & (asuint(cb0[282].y));
+                        r15.y = (uint)((asint(r15.y)) != (0)) * 0xffffffffu;
+                        r15.y = (r3.z) & (r15.y);
+                        if (((r15.y) != 0)) {
+                            r15.y = asuint((cb0[279].z) * (0.8660253882408142) + (-cb0[270 + asint((asfloat(r13.y)))].x));
+                            r15.y = (uint)((asfloat(r15.y)) < (abs(asfloat(r8.y)))) * 0xffffffffu;
+                            r15.z = (uint)((0.0) != (cb0[141 + asint((asfloat(r14.y)))].w)) * 0xffffffffu;
+                            r15.y = (r15.z) & (r15.y);
+                            if (((r15.y) != 0)) {
+                                r15.y = (uint)((asint(r14.z)) != (asint(r14.y))) * 0xffffffffu;
+                                if (((r15.y) != 0)) {
+                                    r11.xyzw = (asuint(cb0[141 + asint((asfloat(r14.y)))].xyzw));
+                                    r10.z = (r15.x);
+                                    r13.z = (4294967295u);
+                                    break;
+                                }
+                                if (((r6.z) != 0)) {
+                                    r15.z = asuint((-cb0[270 + asint((asfloat(r13.y)))].x) * (1.154700517654419) + (cb0[279].z));
+                                    r15.w = (uint)((asint(r14.w)) != (asint(r14.y))) * 0xffffffffu;
+                                    if (((r15.w) != 0)) {
+                                        r16.xy = asuint((asfloat(r15.zz)) * (float2(-0.5,0.8660253882408142)));
+                                        r16.zw = asuint((-asfloat(r15.zz)) * (float2(-0.5,0.8660253882408142)) + (asfloat(r8.xy)));
+                                        r15.w = asuint(dot((asfloat(r16.zw)), (asfloat(r16.zw))));
+                                        r15.w = asuint(rsqrt((asfloat(r15.w))));
+                                        r16.zw = asuint((asfloat(r15.ww)) * (asfloat(r16.zw)));
+                                        r15.w = asuint(dot((asfloat(r16.xy)), (asfloat(r16.xy))));
+                                        r15.w = asuint(rsqrt((asfloat(r15.w))));
+                                        r16.xy = asuint((asfloat(r15.ww)) * (asfloat(r16.xy)));
+                                        r15.w = asuint(dot((asfloat(r16.zw)), (asfloat(r16.xy))));
+                                        r16.x = asuint((-abs(asfloat(r15.w))) + (1.0));
+                                        r16.x = asuint(sqrt((asfloat(r16.x))));
+                                        r16.y = asuint((abs(asfloat(r15.w))) * (-0.018729299306869507) + (0.07426100224256516));
+                                        r16.y = asuint((asfloat(r16.y)) * (abs(asfloat(r15.w))) + (-0.2121143937110901));
+                                        r16.y = asuint((asfloat(r16.y)) * (abs(asfloat(r15.w))) + (1.5707287788391113));
+                                        r16.z = asuint((asfloat(r16.x)) * (asfloat(r16.y)));
+                                        r16.z = asuint((asfloat(r16.z)) * (-2.0) + (3.1415927410125732));
+                                        r15.w = (uint)((asfloat(r15.w)) < (-asfloat(r15.w))) * 0xffffffffu;
+                                        r15.w = (r15.w) & (r16.z);
+                                        r15.w = asuint((asfloat(r16.y)) * (asfloat(r16.x)) + (asfloat(r15.w)));
+                                        r15.w = (uint)((asfloat(r15.w)) < (1.0471973419189453)) * 0xffffffffu;
+                                        if (((r15.w) != 0)) {
+                                            r11.xyzw = (asuint(cb0[141 + asint((asfloat(r14.y)))].xyzw));
+                                            r10.z = (r15.x);
+                                            r13.z = (4294967295u);
+                                            break;
+                                        }
+                                    } else {
+                                        r15.w = (0u);
+                                    }
+                                    r16.x = (uint)((asint(r14.x)) != (asint(r14.y))) * 0xffffffffu;
+                                    if (((r16.x) != 0)) {
+                                        r16.xy = asuint((asfloat(r15.zz)) * (float2(0.5,0.8660253882408142)));
+                                        r16.zw = asuint((-asfloat(r15.zz)) * (float2(0.5,0.8660253882408142)) + (asfloat(r8.xy)));
+                                        r15.z = asuint(dot((asfloat(r16.zw)), (asfloat(r16.zw))));
+                                        r15.z = asuint(rsqrt((asfloat(r15.z))));
+                                        r16.zw = asuint((asfloat(r15.zz)) * (asfloat(r16.zw)));
+                                        r15.z = asuint(dot((asfloat(r16.xy)), (asfloat(r16.xy))));
+                                        r15.z = asuint(rsqrt((asfloat(r15.z))));
+                                        r16.xy = asuint((asfloat(r15.zz)) * (asfloat(r16.xy)));
+                                        r15.z = asuint(dot((asfloat(r16.zw)), (asfloat(r16.xy))));
+                                        r16.x = asuint((-abs(asfloat(r15.z))) + (1.0));
+                                        r16.x = asuint(sqrt((asfloat(r16.x))));
+                                        r16.y = asuint((abs(asfloat(r15.z))) * (-0.018729299306869507) + (0.07426100224256516));
+                                        r16.y = asuint((asfloat(r16.y)) * (abs(asfloat(r15.z))) + (-0.2121143937110901));
+                                        r16.y = asuint((asfloat(r16.y)) * (abs(asfloat(r15.z))) + (1.5707287788391113));
+                                        r16.z = asuint((asfloat(r16.x)) * (asfloat(r16.y)));
+                                        r16.z = asuint((asfloat(r16.z)) * (-2.0) + (3.1415927410125732));
+                                        r15.z = (uint)((asfloat(r15.z)) < (-asfloat(r15.z))) * 0xffffffffu;
+                                        r15.z = (r15.z) & (r16.z);
+                                        r15.z = asuint((asfloat(r16.y)) * (asfloat(r16.x)) + (asfloat(r15.z)));
+                                        r15.z = (uint)((asfloat(r15.z)) < (1.0471973419189453)) * 0xffffffffu;
+                                        if (((r15.z) != 0)) {
+                                            r11.xyzw = (asuint(cb0[141 + asint((asfloat(r14.y)))].xyzw));
+                                            r10.z = (r15.x);
+                                            r13.z = (4294967295u);
+                                            break;
+                                        }
+                                    } else {
+                                        r15.z = (0u);
+                                    }
+                                    r15.z = (r15.w) | (r15.z);
+                                } else {
+                                    r15.w = asuint((-cb0[270 + asint((asfloat(r13.y)))].x) * (1.154700517654419) + (cb0[279].z));
+                                    r16.x = (uint)((asint(r14.w)) != (asint(r14.y))) * 0xffffffffu;
+                                    if (((r16.x) != 0)) {
+                                        if (((r6.w) != 0)) {
+                                            r16.xy = asuint((asfloat(r15.ww)) * (float2(-0.5,0.8660253882408142)));
+                                            r16.zw = asuint((-asfloat(r15.ww)) * (float2(-0.5,0.8660253882408142)) + (asfloat(r8.xy)));
+                                            r17.x = asuint(dot((asfloat(r16.zw)), (asfloat(r16.zw))));
+                                            r17.x = asuint(rsqrt((asfloat(r17.x))));
+                                            r16.zw = asuint((asfloat(r16.zw)) * (asfloat(r17.xx)));
+                                            r17.x = asuint(dot((asfloat(r16.xy)), (asfloat(r16.xy))));
+                                            r17.x = asuint(rsqrt((asfloat(r17.x))));
+                                            r16.xy = asuint((asfloat(r16.xy)) * (asfloat(r17.xx)));
+                                            r16.x = asuint(dot((asfloat(r16.zw)), (asfloat(r16.xy))));
+                                            r16.y = asuint((-abs(asfloat(r16.x))) + (1.0));
+                                            r16.y = asuint(sqrt((asfloat(r16.y))));
+                                            r16.z = asuint((abs(asfloat(r16.x))) * (-0.018729299306869507) + (0.07426100224256516));
+                                            r16.z = asuint((asfloat(r16.z)) * (abs(asfloat(r16.x))) + (-0.2121143937110901));
+                                            r16.z = asuint((asfloat(r16.z)) * (abs(asfloat(r16.x))) + (1.5707287788391113));
+                                            r16.w = asuint((asfloat(r16.y)) * (asfloat(r16.z)));
+                                            r16.w = asuint((asfloat(r16.w)) * (-2.0) + (3.1415927410125732));
+                                            r16.x = (uint)((asfloat(r16.x)) < (-asfloat(r16.x))) * 0xffffffffu;
+                                            r16.x = (r16.x) & (r16.w);
+                                            r16.x = asuint((asfloat(r16.z)) * (asfloat(r16.y)) + (asfloat(r16.x)));
+                                            r16.x = (uint)((asfloat(r16.x)) < (1.0471973419189453)) * 0xffffffffu;
+                                            if (((r16.x) != 0)) {
+                                                r11.xyzw = (asuint(cb0[141 + asint((asfloat(r14.y)))].xyzw));
+                                                r10.z = (r15.x);
+                                                r13.z = (4294967295u);
+                                                break;
+                                            }
+                                        } else {
+                                            r16.y = asuint((asfloat(r1.y)) * (cb0[282].x) + (cb0[270 + asint((asfloat(r13.y)))].x));
+                                            r16.x = (uint)((asfloat(r16.y)) >= (asfloat(r7.y))) * 0xffffffffu;
+                                            if (((r16.x) != 0)) {
+                                                r11.xyzw = (asuint(cb0[141 + asint((asfloat(r14.y)))].xyzw));
+                                                r10.z = (r15.x);
+                                                r13.z = (4294967295u);
+                                                break;
+                                            }
+                                        }
+                                    } else {
+                                        r16.x = (0u);
+                                    }
+                                    r16.y = (uint)((asint(r14.x)) != (asint(r14.y))) * 0xffffffffu;
+                                    if (((r16.y) != 0)) {
+                                        if (((r7.z) != 0)) {
+                                            r16.yz = asuint((asfloat(r15.ww)) * (float2(0.5,0.8660253882408142)));
+                                            r17.xy = asuint((-asfloat(r15.ww)) * (float2(0.5,0.8660253882408142)) + (asfloat(r8.xy)));
+                                            r15.w = asuint(dot((asfloat(r17.xy)), (asfloat(r17.xy))));
+                                            r15.w = asuint(rsqrt((asfloat(r15.w))));
+                                            r17.xy = asuint((asfloat(r15.ww)) * (asfloat(r17.xy)));
+                                            r15.w = asuint(dot((asfloat(r16.yz)), (asfloat(r16.yz))));
+                                            r15.w = asuint(rsqrt((asfloat(r15.w))));
+                                            r16.yz = asuint((asfloat(r15.ww)) * (asfloat(r16.yz)));
+                                            r15.w = asuint(dot((asfloat(r17.xy)), (asfloat(r16.yz))));
+                                            r16.y = asuint((-abs(asfloat(r15.w))) + (1.0));
+                                            r16.y = asuint(sqrt((asfloat(r16.y))));
+                                            r16.z = asuint((abs(asfloat(r15.w))) * (-0.018729299306869507) + (0.07426100224256516));
+                                            r16.z = asuint((asfloat(r16.z)) * (abs(asfloat(r15.w))) + (-0.2121143937110901));
+                                            r16.z = asuint((asfloat(r16.z)) * (abs(asfloat(r15.w))) + (1.5707287788391113));
+                                            r16.w = asuint((asfloat(r16.y)) * (asfloat(r16.z)));
+                                            r16.w = asuint((asfloat(r16.w)) * (-2.0) + (3.1415927410125732));
+                                            r15.w = (uint)((asfloat(r15.w)) < (-asfloat(r15.w))) * 0xffffffffu;
+                                            r15.w = (r15.w) & (r16.w);
+                                            r15.w = asuint((asfloat(r16.z)) * (asfloat(r16.y)) + (asfloat(r15.w)));
+                                            r15.w = (uint)((asfloat(r15.w)) < (1.0471973419189453)) * 0xffffffffu;
+                                            if (((r15.w) != 0)) {
+                                                r11.xyzw = (asuint(cb0[141 + asint((asfloat(r14.y)))].xyzw));
+                                                r10.z = (r15.x);
+                                                r13.z = (4294967295u);
+                                                break;
+                                            }
+                                        } else {
+                                            r16.y = asuint((asfloat(r1.y)) * (cb0[282].x) + (cb0[270 + asint((asfloat(r13.y)))].x));
+                                            r15.w = (uint)((asfloat(r16.y)) >= (asfloat(r9.w))) * 0xffffffffu;
+                                            if (((r15.w) != 0)) {
+                                                r11.xyzw = (asuint(cb0[141 + asint((asfloat(r14.y)))].xyzw));
+                                                r10.z = (r15.x);
+                                                r13.z = (4294967295u);
+                                                break;
+                                            }
+                                        }
+                                    } else {
+                                        r15.w = (0u);
+                                    }
+                                    r15.z = (r16.x) | (r15.w);
+                                }
+                                r13.z = (r15.y) | (r15.z);
+                            } else {
+                                r13.z = (0u);
+                            }
+                        } else {
+                            r13.z = (0u);
+                        }
+                        if (((r3.z) != 0)) {
+                            r15.y = (r13.w) & (asuint(cb0[282].y));
+                            if (((r15.y) != 0)) {
+                                r15.y = (uint)((0.0) != (cb0[13 + asint((asfloat(r14.y)))].w)) * 0xffffffffu;
+                                if (((r15.y) != 0)) {
+                                    r12.xyzw = (asuint(cb0[13 + asint((asfloat(r14.y)))].xyzw));
+                                }
+                            }
+                        }
+                    } else {
+                        r15.yz = (uint2)((asint(r10.ww)) == (int2(-1,1))) * 0xffffffffu;
+                        r14.x = ((r15.z) != 0) ? (r14.x) : (255u);
+                        r14.x = ((r15.y) != 0) ? (r14.w) : (r14.x);
+                        r14.w = (uint)((asint(r14.x)) == (asint(r14.z))) * 0xffffffffu;
+                        r15.y = (uint)((asint(r14.z)) == (asint(r14.y))) * 0xffffffffu;
+                        r14.w = (r14.w) & (r15.y);
+                        r15.z = (uint)((asint(r14.x)) != (asint(r14.y))) * 0xffffffffu;
+                        r15.w = (uint)((asint(r14.z)) != (asint(r14.y))) * 0xffffffffu;
+                        r15.z = (r15.w) & (r15.z);
+                        r14.x = (uint)((asint(r14.z)) != (asint(r14.x))) * 0xffffffffu;
+                        r14.x = ((r14.x) != 0) ? (2u) : (1u);
+                        r14.x = ((r15.z) != 0) ? (r14.x) : (4294967295u);
+                        r14.x = ((r14.w) != 0) ? (0u) : (r14.x);
+                        if (!((r14.x) != 0)) {
+                            r14.w = (r13.w) & (asuint(cb0[282].y));
+                            r14.w = (uint)((asint(r14.w)) != (0)) * 0xffffffffu;
+                            r14.w = (r3.z) & (r14.w);
+                            if (((r14.w) != 0)) {
+                                r14.w = (uint)((0.0) != (cb0[13 + asint((asfloat(r14.y)))].w)) * 0xffffffffu;
+                                if (((r14.w) != 0)) {
+                                    r12.xyzw = (asuint(cb0[13 + asint((asfloat(r14.y)))].xyzw));
+                                }
+                            }
+                            r13.z = (0u);
+                        } else {
+                            r14.w = (uint)((asint(r14.x)) == (-1)) * 0xffffffffu;
+                            if (((r14.w) != 0)) {
+                                r14.w = (r13.x) & (asuint(cb0[282].y));
+                                r14.w = (uint)((asint(r14.w)) != (0)) * 0xffffffffu;
+                                r14.w = (r3.z) & (r14.w);
+                                if (((r14.w) != 0)) {
+                                    r14.w = (uint)((0.0) != (cb0[141 + asint((asfloat(r14.y)))].w)) * 0xffffffffu;
+                                    if (((r14.w) != 0)) {
+                                        r14.w = asuint((float)(asint(r10.w)));
+                                        r14.w = asuint((asfloat(r14.w)) * (-1.0471973419189453));
+                                        r16.x = asuint(sin((asfloat(r14.w))));
+                                        r17.x = asuint(cos((asfloat(r14.w))));
+                                        r14.w = asuint((asfloat(r9.z)) * (asfloat(r16.x)));
+                                        r18.x = asuint((-asfloat(r9.x)) * (asfloat(r17.x)) + (-asfloat(r14.w)));
+                                        r14.w = asuint((asfloat(r9.z)) * (asfloat(r17.x)));
+                                        r18.y = asuint((-asfloat(r9.x)) * (asfloat(r16.x)) + (asfloat(r14.w)));
+                                        r15.yz = ((r15.yy) != 0) ? (r18.xy) : (r9.xz);
+                                        r15.yz = asuint((-asfloat(r8.xy)) + (asfloat(r15.yz)));
+                                        r14.w = asuint(dot((asfloat(r15.yz)), (asfloat(r15.yz))));
+                                        r14.w = asuint(sqrt((asfloat(r14.w))));
+                                        r15.y = asuint((asfloat(r1.y)) * (cb0[282].x) + (cb0[270 + asint((asfloat(r13.y)))].x));
+                                        r14.w = (uint)((asfloat(r14.w)) < (asfloat(r15.y))) * 0xffffffffu;
+                                        if (((r14.w) != 0)) {
+                                            r11.xyzw = (asuint(cb0[141 + asint((asfloat(r14.y)))].xyzw));
+                                            r10.z = (r15.x);
+                                            r13.z = (4294967295u);
+                                            break;
+                                        }
+                                        r13.z = (r14.w);
+                                    } else {
+                                        r13.z = (0u);
+                                    }
+                                } else {
+                                    r13.z = (0u);
+                                }
+                                if (((r3.z) != 0)) {
+                                    r14.w = (r13.w) & (asuint(cb0[282].y));
+                                    if (((r14.w) != 0)) {
+                                        r14.w = (uint)((0.0) != (cb0[13 + asint((asfloat(r14.y)))].w)) * 0xffffffffu;
+                                        if (((r14.w) != 0)) {
+                                            r12.xyzw = (asuint(cb0[13 + asint((asfloat(r14.y)))].xyzw));
+                                        }
+                                    }
+                                }
+                            } else {
+                                r14.w = (uint)((0) < (asint(r14.x))) * 0xffffffffu;
+                                if (((r14.w) != 0)) {
+                                    r14.w = (r13.x) & (asuint(cb0[282].y));
+                                    if (((r14.w) != 0)) {
+                                        r14.w = (uint)((0.0) != (cb0[141 + asint((asfloat(r14.y)))].w)) * 0xffffffffu;
+                                        r14.w = (r3.z) & (r14.w);
+                                        if (((r14.w) != 0)) {
+                                            if (((r10.y) != 0)) {
+                                                r14.w = asuint((asfloat(r1.y)) * (cb0[282].x) + (-cb0[270 + asint((asfloat(r13.y)))].x));
+                                                r14.w = (uint)((asfloat(r14.w)) < (asfloat(r10.x))) * 0xffffffffu;
+                                                if (((r14.w) != 0)) {
+                                                    r11.xyzw = (asuint(cb0[141 + asint((asfloat(r14.y)))].xyzw));
+                                                    r10.z = (r15.x);
+                                                    r13.z = (4294967295u);
+                                                    break;
+                                                }
+                                            } else {
+                                                r14.w = (0u);
+                                            }
+                                        } else {
+                                            r14.w = (0u);
+                                        }
+                                        r15.y = (uint)((0.0) != (cb0[141 + asint((asfloat(r14.z)))].w)) * 0xffffffffu;
+                                        r15.y = (r5.w) & (r15.y);
+                                        r15.z = (uint)((asint(r14.x)) != (2)) * 0xffffffffu;
+                                        r15.y = (r15.z) & (r15.y);
+                                        if (((r15.y) != 0)) {
+                                            if (((r4.w) != 0)) {
+                                                r15.y = asuint((asfloat(r1.y)) * (cb0[282].x) + (cb0[270 + asint((asfloat(r13.y)))].x));
+                                                r15.y = (uint)((asfloat(r15.y)) >= (asfloat(r10.x))) * 0xffffffffu;
+                                                if (((r15.y) != 0)) {
+                                                    r11.xyzw = (asuint(cb0[141 + asint((asfloat(r14.z)))].xyzw));
+                                                    r10.z = (r15.x);
+                                                    r13.z = (4294967295u);
+                                                    break;
+                                                }
+                                            } else {
+                                                r15.y = (0u);
+                                            }
+                                        } else {
+                                            r15.y = (0u);
+                                        }
+                                        r13.z = (r14.w) | (r15.y);
+                                    } else {
+                                        r13.z = (0u);
+                                    }
+                                    r13.w = (r13.w) & (asuint(cb0[282].y));
+                                    if (((r13.w) != 0)) {
+                                        if (((r9.y) != 0)) {
+                                            r13.w = (uint)((0.0) != (cb0[13 + asint((asfloat(r14.y)))].w)) * 0xffffffffu;
+                                            r13.w = (r3.z) & (r13.w);
+                                            if (((r13.w) != 0)) {
+                                                r12.xyzw = (asuint(cb0[13 + asint((asfloat(r14.y)))].xyzw));
+                                            }
+                                        } else {
+                                            r13.w = (uint)((asint(r14.x)) != (2)) * 0xffffffffu;
+                                            if (((r13.w) != 0)) {
+                                                r13.w = (uint)((0.0) != (cb0[13 + asint((asfloat(r14.z)))].w)) * 0xffffffffu;
+                                                r13.w = (r3.z) & (r13.w);
+                                                if (((r13.w) != 0)) {
+                                                    r12.xyzw = (asuint(cb0[13 + asint((asfloat(r14.z)))].xyzw));
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    r13.z = (0u);
+                                }
+                            }
+                        }
+                    }
+                    r10.z = (r15.x);
+                } else {
+                    r13.z = (0u);
+                }
+                r13.x = (r13.x) >> ((2u) & 31);
+                r13.y = asuint((asint(r13.y)) + (-1));
+                r11.xyzw = (uint4(0u,0u,0u,0u));
+            }
+            r1.x = (r3.z) & (r10.z);
+            r1.y = asuint((cb0[279].z) * (0.8660253882408142) + (-cb0[270].x));
+            r1.y = (uint)((asfloat(r1.y)) < (abs(asfloat(r8.y)))) * 0xffffffffu;
+            r1.x = (r1.y) & (r1.x);
+            r1.y = (asuint(cb0[282].y)) & (1u);
+            r3.x = (uint)((asint(r1.y)) != (0)) * 0xffffffffu;
+            r6.xyzw = ((r1.yyyy) != 0) ? (asuint(cb0[269].xyzw)) : (r11.xyzw);
+            r6.xyzw = ((r1.xxxx) != 0) ? (r6.xyzw) : (r11.xyzw);
+            r1.x = (r1.x) & (r3.x);
+            r6.xyzw = ((r1.xxxx) != 0) ? (r6.xyzw) : (r12.xyzw);
+            r6.xyzw = ((r13.zzzz) != 0) ? (r11.xyzw) : (r6.xyzw);
+            // ---- SAN14: no black bands on steep walls (border strokes); v26k45: none at all on land nobody owns; half faction colour on the swamp ----
+            {
+                float sanMx = max(asfloat(r6.x), max(asfloat(r6.y), asfloat(r6.z)));
+                if (r13.z != 0) { if (asfloat(r5.y) < 0.6 && sanMx < 0.15) r6.w = 0u; }
+                else if (r1.x != 0) { if (sanMx < 0.15) r6.w = 0u; }
+                else if (asfloat(r6.w) > 0.0) { float sanSk = swampAt(sanWorld);
+                    if (sanSk > 0.002) r6.w = asuint(asfloat(r6.w) * (1.0 - 0.5 * smoothstep(0.15, 0.75, sanSk))); }
+            }
+            r3.xyz = asuint((-asfloat(r0.xyz)) + (asfloat(r6.xyz)));
+            r0.xyz = asuint((asfloat(r6.www)) * (asfloat(r3.xyz)) + (asfloat(r0.xyz)));
+            r1.x = (uint)((0.0) < (asfloat(r6.w))) * 0xffffffffu;
+            if (((r1.x) != 0)) {
+                r3.xyz = asuint((-asfloat(r4.xyz)) + (cb0[281].xyz));
+                o1.xyz = (cb0[281].www) * (asfloat(r3.xyz)) + (asfloat(r4.xyz));
+                r1.x = asuint((t0.Load(int3((int2(0,0)), (0)))).x);
+                r1.x = asuint(max((asfloat(r1.x)), (1.0000000116860974e-07)));
+                r1.x = asuint((1.0) / (asfloat(r1.x)));
+                r3.xyz = asuint((asfloat(r1.xxx)) * (asfloat(r6.xyz)));
+                r3.xyz = asuint((asfloat(r6.www)) * (asfloat(r3.xyz)));
+                r2.xyz = asuint((asfloat(r3.xyz)) * (cb0[280].zzz));
+                r3.w = (asuint(cb0[280].y));
+                r0.w = (asuint(cb0[280].x));
+            } else {
+                o1.xyz = asfloat((r4.xyz));
+            }
+        } else {
+            o1.xyz = asfloat((r4.xyz));
+        }
+    } else {
+        o1.xyz = asfloat((r4.xyz));
+    }
+    o1.w = (asfloat(r3.w)) * (0.5);
+    r3.xyz = asuint((asfloat(r5.yyy)) * (cb0[9].zxy));
+    r3.xyz = asuint((asfloat(r5.xxx)) * (cb0[8].zxy) + (asfloat(r3.xyz)));
+    r3.xyz = asuint((asfloat(r5.zzz)) * (cb0[10].zxy) + (asfloat(r3.xyz)));
+    r1.x = asuint((abs(asfloat(r3.z))) + (abs(asfloat(r3.y))));
+    r1.x = asuint((abs(asfloat(r3.x))) + (asfloat(r1.x)));
+    r3.xyz = asuint((asfloat(r3.xyz)) / (asfloat(r1.xxx)));
+    r1.xy = asuint((-abs(asfloat(r3.zy))) + (float2(1.0,1.0)));
+    r4.xyz = (uint3)((asfloat(r3.xyz)) >= (float3(0.0,0.0,0.0))) * 0xffffffffu;
+    r3.xw = ((r4.yz) != 0) ? (uint2(1065353216u,1065353216u)) : (uint2(3212836864u,3212836864u));
+    r1.xy = asuint((asfloat(r1.xy)) * (asfloat(r3.xw)));
+    r1.xy = ((r4.xx) != 0) ? (r3.yz) : (r1.xy);
+    o2.xy = (asfloat(r1.xy)) * (float2(0.5,0.5)) + (float2(0.5,0.5));
+    o2.zw = asfloat((r1.zw));
+    o3.xyzw = asfloat((r2.xyzw));
+    o0.xyzw = asfloat((r0.xyzw));
+    return;
+}

@@ -1,0 +1,148 @@
+// SAN14 season map v25.9: replacement for the terrain vertex shader (far)
+// SAN14 season map v25.9: terrain vertex shader replacement.
+// Identical to the game's terrain vertex shader except that, while a landslide or an earthquake is on the map
+// (the same disaster slots the season pixel shader reads), the ground in that place is raised or dropped:
+//   landslide: the blocked cell becomes a heap of earth and big blocks, about a mounted rider's chest high
+//   earthquake: along the fault one side drops, leaving a low scarp you can see on slopes and plains alike
+// No disaster on the map = nothing changes (the loop ends at once).
+Texture1D<float4> IniParams : register(t120);
+float sr_hash21(float2 p) { p = frac(p * float2(123.34, 456.21)); p += dot(p, p + 45.32); return frac(p.x * p.y); }
+float sr_vnoise(float2 p)
+{
+    float2 i = floor(p), f = frac(p);
+    float2 u = f * f * (3.0 - 2.0 * f);
+    float a = sr_hash21(i), b = sr_hash21(i + float2(1, 0)), c = sr_hash21(i + float2(0, 1)), d = sr_hash21(i + float2(1, 1));
+    return lerp(lerp(a, b, u.x), lerp(c, d, u.x), u.y);
+}
+float sr_hexn(float2 rel) { float2 rn = rel / (700.0 / 1.5); return max(abs(rn.y) * 1.1547, abs(rn.x) + abs(rn.y) * 0.57735); }
+float2 sr_cellc(float cell)
+{
+    float col = cell - floor((cell + 0.5) / 220.0) * 220.0, row = floor((cell + 0.5) / 220.0);
+    float odd = col - floor(col * 0.5) * 2.0;
+    return float2(37550.0, 13850.0) + float2(col * 700.0, (row - 0.5 * odd) * 808.29);
+}
+float sr_count()                           // link test: slots in use, from the direct link when it is on
+{
+    float4 dlk = IniParams.Load(int2(60, 0));
+    return dlk.w > 0.5 ? dlk.z - floor((dlk.z + 0.5) / 256.0) * 256.0 : IniParams.Load(int2(2, 0)).w;
+}
+float sr_bump(float2 p)                    // world units, added to the ground height at world position p (x, z)
+{
+    float4 dlk = IniParams.Load(int2(60, 0));
+    float dlon = dlk.w > 0.5 ? 1.0 : 0.0, dlbank = floor((dlk.z + 0.5) / 256.0);
+    float evn = sr_count();
+    float total = 0.0;
+    [branch] if (evn > 0.5)
+    [loop] for (int si = 0; si < 16; si++) {
+        if ((float)si >= evn) break;
+        float v, chk;
+        [branch] if (dlon > 0.5) { v = round(IniParams.Load(int2(64 + (int)dlbank * 16 + si / 4, 0))[si % 4]); chk = -1.0; }
+        else { float4 evq = IniParams.Load(int2(3 + si / 4, 0)), ecq = IniParams.Load(int2(7 + si / 4, 0)); v = round(evq[si % 4]); chk = round(ecq[si % 4]); }
+        if (v < 1.0) continue;
+        if (chk >= 0.0) {
+        float ds = v + si * 7919.0; ds -= floor((ds + 4986.5) / 9973.0) * 9973.0; if (ds < -0.5) ds += 9973.0;   // v25.9c: check = (value + slot * 7919) mod 9973
+        if (abs(ds - chk) > 0.5) continue; }
+        float code = floor((v + 0.5) / 48400.0), cell = v - code * 48400.0;
+        float ty = floor((code + 0.5) / 36.0), pp = code - ty * 36.0;
+        if (ty != 3.0 && ty != 4.0) continue;
+        float2 cw = sr_cellc(cell), rel = p - cw;
+        if (ty == 3.0) {
+            if (dot(rel, rel) > 1100.0 * 1100.0) continue;
+            float inside = smoothstep(1.25, 0.85, sr_hexn(rel));
+            if (inside <= 0.0) continue;
+            float heap = 110.0 * inside * (0.7 + 0.3 * sr_vnoise(p / 170.0 + 3.0));      // the earth fill
+            float blk = 0.0;                                                               // big blocks on top (same places the pixel shader paints them)
+            const float cs = 220.0;
+            float2 g = p / cs, gi = floor(g);
+            [unroll] for (int oy = -1; oy <= 1; oy++) [unroll] for (int ox = -1; ox <= 1; ox++) {
+                float2 o = float2(ox, oy), id = gi + o;
+                float h1 = sr_hash21(id), h2 = sr_hash21(id + 19.0), h3 = sr_hash21(id + 37.0);
+                float2 bc = (gi + o + 0.2 + float2(h1, h2) * 0.6) * cs;
+                float keep = 0.8 * smoothstep(1.25, 0.85, sr_hexn(bc - cw));
+                if (h3 > keep) continue;
+                float r = 0.62 * (0.8 + 0.4 * h2) * cs;
+                float t = saturate(1.0 - length(p - bc) / r);
+                blk = max(blk, (70.0 + 100.0 * h1) * pow(t, 0.6));
+            }
+            total += heap + blk * inside;
+        } else {
+            float qt = floor((pp + 0.5) / 12.0), qdir = pp - qt * 12.0;          // v25.9: strength 0 quake, 1 strong, 2 great
+            float qs = qt < 0.5 ? 0.6 : (qt < 1.5 ? 1.0 : 1.4), qw = qt < 0.5 ? 0.55 : (qt < 1.5 ? 1.0 : 1.35);
+            float qd = qt < 0.5 ? 0.6 : (qt < 1.5 ? 1.0 : 1.5);                  // how deep the ground drops
+            float angq = qdir * 0.2618;
+            float2 fd = float2(cos(angq), sin(angq));
+            float qa = dot(rel, fd), qn = dot(rel, float2(-fd.y, fd.x));
+            float qL = 3600.0 * qs;
+            if (abs(qa) > qL) continue;
+            float wig = (sr_vnoise(float2(qa / 650.0, 1.7)) - 0.5) * 420.0 + (sr_vnoise(float2(qa / 140.0, 3.1)) - 0.5) * 90.0;
+            float sd = qn - wig, taper = saturate(1.0 - abs(qa) / qL);
+            float wq = (40.0 + 140.0 * taper) * qw;                                                       // the chasm (same width the pixel shader paints)
+            total -= 70.0 * qd * (0.4 + 0.6 * taper) * smoothstep(wq * 0.5, wq + 60.0, sd) * smoothstep(1100.0, 450.0, sd);   // the dropped side
+            total -= 110.0 * qd * taper * smoothstep(wq, wq * 0.3, abs(sd));                            // the open trench
+        }
+    }
+    return total;
+}
+cbuffer cb0 : register(b0) { float4 cb0[5]; }        // mW2P (rows 0..3), vHgtMapInf (4)
+Texture2D<float4> t8 : register(t8);                 // sLandHeight
+SamplerState s8 : register(s8);
+
+// the game's terrain vertex shader, instruction by instruction, plus sr_bump()
+void terrain(uint vid, float4 v1, float3 v2, float3 v3, float4 v4, float4 v5,
+             out float4 pos, out float3 r3, out float3 wpos, out float2 uv, out float3 nrm, out float3 tng)
+{
+    uint fx = asuint(v5.x), fy = asuint(v5.y);
+    bool c0 = ((fx & 15u) != 0u) && (vid < fy);
+    uint d0 = (fx & 15u) << 1;
+    float r0z = 1.0 / ((float)fy - 1.0);
+    float r0x = c0 ? (v1.x - (float)(vid % d0) * r0z) : v1.x;
+    uint3 f = (uint3(fx, fx, fx) >> uint3(4, 8, 12)) & 15u;          // ubfe 4 bits at 4, 8, 12 (edge stitching steps)
+    uint3 r2 = f << 1;
+    bool3 nz = bool3(f.x != 0u, f.y != 0u, f.z != 0u);
+    float r0y = r0x - (float)(vid % r2.x) * r0z;
+    int r0w = (int)fy - 1;
+    uint r1w = (uint)(r0w * (int)fy);
+    bool r1x = (r1w < vid) && nz.x;
+    float r3x = r1x ? r0y : r0x;
+    uint q = vid / fy, colu = vid % fy;
+    float2 rq = float2((float)(q % r2.y), (float)(q % r2.z));
+    float rx = v1.z - rq.x * r0z;
+    bool b1 = (colu == 0u) && nz.y;
+    bool b2 = ((uint)r0w == colu) && nz.z;
+    float zx = b1 ? rx : v1.z;
+    float zy = zx - rq.y * r0z;
+    float r3z = b2 ? zy : zx;
+    uv = (v4.zw - v4.xy) * float2(r3x, r3z) + v4.xy;
+    r3 = float3(r3x, t8.SampleLevel(s8, uv, 0).x, r3z);
+    wpos = r3 * v3 + v2;
+    float evn = sr_count();
+    float b0 = 0.0, bx0 = 0.0, bx1 = 0.0, bz0 = 0.0, bz1 = 0.0;
+    float d = 1.0 / cb0[4].x * 1.1;
+    [branch] if (evn > 0.5) {
+        b0 = sr_bump(wpos.xz);
+        float ex = d * v3.x / max(abs(v4.z - v4.x), 1e-6), ez = d * v3.z / max(abs(v4.w - v4.y), 1e-6);
+        bx0 = sr_bump(wpos.xz - float2(ex, 0)); bx1 = sr_bump(wpos.xz + float2(ex, 0));
+        bz0 = sr_bump(wpos.xz - float2(0, ez)); bz1 = sr_bump(wpos.xz + float2(0, ez));
+        float sy = abs(v3.y) > 1e-6 ? v3.y : 1.0;
+        r3.y += b0 / sy; wpos.y += b0;
+        bx0 /= sy; bx1 /= sy; bz0 /= sy; bz1 /= sy;
+    }
+    pos = wpos.y * cb0[1] + wpos.x * cb0[0] + wpos.z * cb0[2] + cb0[3];
+    float4 m = saturate(uv.xyxy - float4(d, 0, 0, d)), pl = saturate(uv.xyxy + float4(d, 0, 0, d));
+    float hx0 = t8.SampleLevel(s8, m.xy, 0).x + bx0, hz0 = t8.SampleLevel(s8, m.zw, 0).x + bz0;
+    float hx1 = t8.SampleLevel(s8, pl.xy, 0).x + bx1, hz1 = t8.SampleLevel(s8, pl.zw, 0).x + bz1;
+    float3 g = float3(hx0 - hx1, cb0[4].y * 2.0, hz0 - hz1);
+    float inv = rsqrt(dot(g, g));
+    float nx = g.x * inv, ny = g.y * inv, nzz = g.z * inv;
+    nrm = float3(nx, ny, nzz);
+    float rs = rsqrt(nzz * nzz + ny * ny);
+    tng = rs * float3(0.0, nzz, -ny);
+}
+void main(uint vid : SV_VertexID, float4 v1 : POSITION, float3 v2 : COLOR1, float3 v3 : COLOR2, float4 v4 : COLOR3, float4 v5 : BLENDWEIGHT,
+          out float4 o0 : SV_Position, out float4 o1 : TEXCOORD0, out float3 o2 : TEXCOORD1, out float3 o3 : TEXCOORD2, out float2 o4 : TEXCOORD3)
+{
+    float3 r3, wpos, nrm, tng; float2 uv;
+    terrain(vid, v1, v2, v3, v4, v5, o0, r3, wpos, uv, nrm, tng);
+    o1 = float4(v3, 1.0);
+    o2 = tng; o3 = nrm; o4 = uv;
+}

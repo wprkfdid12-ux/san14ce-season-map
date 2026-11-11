@@ -1,0 +1,31 @@
+LIBRARY kernel32.dll
+EXPORTS
+VirtualAlloc
+VirtualFree
+GetModuleFileNameW
+CreateFileW
+ReadFile
+WriteFile
+CloseHandle
+SetFilePointer
+GetTickCount64
+GetFileAttributesW
+DeleteFileW
+FlushInstructionCache
+GetCurrentProcess
+GetCurrentThreadId
+GetLocalTime
+CreateThread
+Sleep
+CreateMutexW
+WaitForSingleObject
+ReleaseMutex
+GetCurrentProcessId
+QueryPerformanceCounter
+QueryPerformanceFrequency
+GetModuleHandleW
+VirtualProtect
+VirtualQuery
+ReadProcessMemory
+ AddVectoredExceptionHandler
+ GetModuleHandleExW

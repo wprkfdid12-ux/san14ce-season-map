@@ -1,0 +1,14 @@
+계절 맵 설치기 창 + 깃허브 업데이트 (2026-11-11)
+
+1. 설치기/SeasonSetup.cs — 설치기 창(C# 5, WinForms). 패키지 support\installer 에 들어가고, 설치.cmd → Build.ps1 이 사용자 PC 의
+   .NET Framework csc.exe 로 매번 컴파일해서 연다. 설치·제거는 tools\Season.ps1 / Terrain26.ps1 을 그대로 부름(-GameDir 로 게임 폴더 넘김).
+   판 번호는 game\SAN14Mods\SeasonRules\BUILD.txt 첫 낱말에서 읽음 → 새 판이면 창 제목·큰 제목·상태 줄이 저절로 바뀜.
+   그림·색은 소개글 포스터 1번(크림 바탕·명조 제목·갈색 강조·테두리 꼬리표·지도 사진 header.jpg).
+2. 4_설치기/Season.ps1·Terrain26.ps1 — param 에 -GameDir 추가(없으면 예전처럼 알아서 찾음). 그 밖은 v26k45 와 같음.
+3. 깃허브 저장소 wprkfdid12-ux/san14ce-season-map (통합패치 R43.28 방식)
+   README.md / 처음_설치.cmd / updates/first_setup.ps1 / updates/index.json
+   updates/base/*_NofM.zip = 기본판 전체(48MB 미만 조각) + BASE_SHA256SUMS.txt
+   updates/<판>/SAN14CE_SeasonMap_<판>.zip = 기본판과 다른 파일 + SHA256SUMS.txt
+4. 새 판 올리는 법: 패키지 BUILD.txt 판 번호를 올린 뒤
+   python3 season_release.py <패키지> <저장소> <날짜> "<제목>" <바뀐내용.txt>  → git add/commit/push
+   (기본판은 처음 한 번만 만들어지고, 그다음 판은 바뀐 파일만 작은 zip 으로 올라감)
