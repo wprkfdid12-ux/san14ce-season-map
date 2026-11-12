@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # 계절 맵 깃허브 판 올리기 도구 (2026-11-11)
-#  사용: season_release.py <패키지 폴더> <저장소 폴더> <날짜 yyyy-mm-dd> <제목> <바뀐내용.txt>
+#  사용: season_release.py <패키지 폴더> <저장소 폴더> <날짜 yyyy-mm-dd> <제목> <바뀐내용.txt> [mapexpand]
+#  - 끝에 mapexpand 를 붙이면 '맵 확장용 판'(only=mapexpand): 맵 확장이 없는 PC 의 설치기(v26k49 부터)는 새 판으로 치지 않음
 #  - 패키지 폴더에 SHA256SUMS.txt 를 새로 쓴다 (설치기 exe·BUILD_ERROR.txt·SHA256SUMS.txt 자신은 빼고)
 #  - 저장소에 기본판(updates/base/*)이 없으면 이 패키지 전체로 기본판 조각(48MB 미만)을 만든다
 #  - updates/<판>/SAN14CE_SeasonMap_<판>.zip = 기본판과 다른 파일 + SHA256SUMS.txt
@@ -35,7 +36,7 @@ def zip_files(path, pkg, rels, extra=None):
             for name, data in extra.items(): z.writestr(name, data)
 
 def main():
-    pkg, repo, date, title, notes_file = sys.argv[1:6]
+    pkg, repo, date, title, notes_file = sys.argv[1:6]; only = sys.argv[6] if len(sys.argv) > 6 else ''
     notes = open(notes_file, encoding='utf-8').read().strip()
     build = open(os.path.join(pkg, 'game/SAN14Mods/SeasonRules/BUILD.txt'), encoding='utf-8-sig').read()
     tag = re.match(r'(v\d+k\d+[a-z]?)', build.strip()).group(1)
@@ -71,6 +72,7 @@ def main():
     p = os.path.join(repo, name); zip_files(p, pkg, changed, {'SHA256SUMS.txt': sums_text})
     if os.path.getsize(p) >= 95 * 1024 * 1024: raise SystemExit('판 파일이 너무 큼 — 기본판을 새로 만들어야 함')
     rel = {'tag': tag, 'date': date, 'title': title, 'notes': notes, 'file': name, 'sha256': sha(p), 'size': os.path.getsize(p)}
+    if only: rel['only'] = only
     idx['releases'] = [rel] + [r for r in idx.get('releases', []) if r.get('tag') != tag]
     json.dump(idx, open(idx_path, 'w', encoding='utf-8', newline='\n'), ensure_ascii=False, indent=1)
     print('판', tag, '바뀐 파일', len(changed), '개, 판 파일', os.path.getsize(p), '바이트, 기본판 조각', len(idx['base']), '개')
