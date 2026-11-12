@@ -588,7 +588,11 @@ typedef int (GAMEABI *RouteCostFn)(int base, int flag, void *cell, void *unit, v
 static RouteCostFn rc_orig;
 static int GAMEABI RouteCost(int base, int flag, void *cell, void *unit, void *a5, void *a6, void *a7)
 {
-    int r = rc_orig(base, flag, cell, unit, a5, a6, a7);
+    /* v26k51: the game writes the 5th-7th arguments 8 bytes at a time; read them back 8 bytes at a time as well. The compiler read two
+       of them as one 16-byte load, which the CPU cannot take straight from the two 8-byte writes just made - it waited for the writes
+       to finish (seen on the big map as a third of the busy samples at the top of this function). Same values, same result. */
+    void *b5 = *(void *volatile *)&a5, *b6 = *(void *volatile *)&a6, *b7 = *(void *volatile *)&a7;
+    int r = rc_orig(base, flag, cell, unit, b5, b6, b7);
     rc_calls++;
     if (!rc_ok || rc_off || !cell || r <= 0 || spd_turn != g_turn) return r;
     u8 *d = *dbp(); if (!d) return r; u8 *h0 = *(u8 **)(d + DB_HEX); if (!h0) return r;
@@ -1964,7 +1968,7 @@ static void use_version(int i)
    holds their place. Shown from its own thread, so the game goes on starting meanwhile. Never shown when everything is on. */
 #ifndef HOSTTEST
 static u16 sn_text[1400];
-static DWORD WINAPI sn_thread(void *p) { (void)p; MessageBoxW(0, sn_text, L"계절 맵 v26k50", 0x30 | 0x10000 | 0x40000); return 0; }
+static DWORD WINAPI sn_thread(void *p) { (void)p; MessageBoxW(0, sn_text, L"계절 맵 v26k51", 0x30 | 0x10000 | 0x40000); return 0; }
 static void start_notice(const char *code)
 {
     u16 *w = sn_text; const u16 *head = L"계절 맵의 일부 기능이 꺼진 채로 시작했습니다.\r\n(다른 모드가 같은 자리를 쓰고 있거나, 게임 판이 다르거나, 설치가 덜 된 경우)\r\n계절 그림은 그대로 나옵니다.\r\n\r\n아래 한 줄을 그대로 댓글로 알려 주세요 (이 창에서 Ctrl+C 를 누르면 복사됩니다):\r\n\r\n";
@@ -1986,7 +1990,7 @@ static int pick_version(void)
     if (!gver) use_version(0); return 1;      /* the host test's stand-in image has no exe header: the table it chose (default rollback) */
 #else
     { char b[120], *p = b; p = pstr(p, "SKIPPED: unknown game version (exe stamp "); p = phex(p, stamp); p = pstr(p, ") - nothing changed"); *p = 0; logs(b); }
-    { char c[80], *p = c; p = pstr(p, "SM50 VER "); p = phex(p, stamp); *p = 0; start_notice(c); }
+    { char c[80], *p = c; p = pstr(p, "SM51 VER "); p = phex(p, stamp); *p = 0; start_notice(c); }
     return 0;
 #endif
 }
@@ -2013,7 +2017,7 @@ EXPORT u32 GAMEABI SAN14_ModInitV1(const S14_CoreAPI *a)
       if (GetFileAttributesW(fp) != 0xFFFFFFFFu) DeleteFileW(fp); test_on = 1;   /* v26k30b (asked for): the test build forces everything in every session - no flag needed */
       logs("TEST BUILD: test flag found - every disaster, every weather and every ground state is forced on the third day after loading (every session)"); }
 #endif
-    if (!load_tables()) { logs("SKIPPED: SeasonRules.dat missing or damaged"); start_notice("SM50 DAT"); if (a->Log) a->Log("SeasonRules: data file missing; nothing changed."); return 0; }
+    if (!load_tables()) { logs("SKIPPED: SeasonRules.dat missing or damaged"); start_notice("SM51 DAT"); if (a->Log) a->Log("SeasonRules: data file missing; nothing changed."); return 0; }
     { char b[80], *p = b; p = pstr(p, "tables ok, freezable river cells "); p = pint(p, nf); *p = 0; logs(b); }
     te_load();                                 /* v26k42 */
     engine_load();
@@ -2058,7 +2062,7 @@ EXPORT u32 GAMEABI SAN14_ModInitV1(const S14_CoreAPI *a)
     logs(ti_ok ? "tile info: installed (the hex panel shows what is going on in the cell)" : "tile info: SKIPPED (place taken or different game code) - the hex panel unchanged");
     if (a->Log) a->Log(t_ok ? "SeasonRules: seasonal rivers/disasters on." : "SeasonRules: time hook skipped.");
     {   /* v26k38a: one line - T time step, I tile panel, S speed, F 화계, R route cost (official only); 1 on, 2 on another way, 0 off */
-        char c[600], *p = c; p = pstr(p, "SM50 T"); p = pint(p, t_ok); p = pstr(p, " I"); p = pint(p, ti_ok && ti_calls_ok ? 1 : 0); p = pstr(p, " S"); p = pint(p, s_ok);
+        char c[600], *p = c; p = pstr(p, "SM51 T"); p = pint(p, t_ok); p = pstr(p, " I"); p = pint(p, ti_ok && ti_calls_ok ? 1 : 0); p = pstr(p, " S"); p = pint(p, s_ok);
         p = pstr(p, " F"); p = pint(p, f_ok); p = pstr(p, " R"); p = pint(p, rc_ok); p = pstr(p, " G"); p = pint(p, rg_ok); p = pstr(p, gv_new ? " n5" : gv_off ? " off" : " rb");
         int bad = !t_ok || !(ti_ok && ti_calls_ok) || !s_ok || (gv_off && (!rc_ok || !rg_ok));
 #ifndef HOSTTEST
