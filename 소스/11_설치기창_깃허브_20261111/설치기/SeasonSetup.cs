@@ -315,9 +315,14 @@ static class Checker {
    if (File.Exists(mk)) foreach (string ln in File.ReadAllLines(mk, Encoding.UTF8)) {
     string[] q = ln.Trim('\uFEFF', ' ').Split('|'); if (q.Length < 6) continue; meAll++;
     string path = Path.Combine(game, "0002\\" + q[0]); long o = Int64.Parse(q[1]); int len = Int32.Parse(q[2]); string h = "";
-    try { if (File.Exists(path) && new FileInfo(path).Length >= o + len) h = Sha.HashPart(path, o, len); } catch (Exception) { }
-    if (h == q[4]) { meOk++; mb.AppendLine("  " + (q[5].StartsWith("mhk_") ? "높이(판정용)" : "높이(화면용)") + " — 들어 있음"); }
-    else mb.AppendLine("  " + (q[5].StartsWith("mhk_") ? "높이(판정용)" : "높이(화면용)") + " — 맵 확장이 다시 깔아서 빠짐");
+    // v26k48: by content - a few cells of the copy (written down at install) are read back; the copy may be re-packed by the other mod
+    //         (map expand puts the current heights in again when it is applied) and still hold the season mountains
+    int pst = -1; if (q.Length >= 7) { try { pst = ProbeState(path, o, len, q[6]); } catch (Exception) { pst = -1; } }
+    if (pst == -1) { try { if (File.Exists(path) && new FileInfo(path).Length >= o + len) h = Sha.HashPart(path, o, len); } catch (Exception) { } }
+    string what = q[5].StartsWith("mhk_") ? "높이(판정용)" : "높이(화면용)";
+    if (pst == 1 || (pst == -1 && h == q[4])) { meOk++; mb.AppendLine("  " + what + " — 들어 있음"); }
+    else if (pst == 2) mb.AppendLine("  " + what + " — 일부만 들어 있음");
+    else mb.AppendLine("  " + what + " — 맵 확장이 다시 깔아서 빠짐");
    }
   } catch (Exception e) { mb.AppendLine("  확인 실패: " + e.Message); }
   bool meNeed = grown && (meAll == 0 || meOk < meAll);
@@ -328,6 +333,44 @@ static class Checker {
   SetKind(p, n == 0 ? 0 : (nNew == n && !meNeed) ? 1 : nNew == 0 && nOther == 0 && !grown ? 0 : 2);
   if (p.Kind == 2 && meNeed && nNew == n) p.StatusSub = "맵 확장 쪽 다시 맞추기";
   p.Applied = p.Kind == 1 ? (grown ? "자료에 들어 있음 (맵 확장 포함)" : "자료에 들어 있음") : "—"; p.AppliedColor = p.Kind == 1 ? Theme.Ok : Theme.Mute;
+ }
+ // v26k48: probe cells "P<piece size>:<raw offset>=<season hex>/<original hex>,..." of an IDRK copy at (path, o, len): only the pieces
+ // holding them are inflated. 1 = all season, 0 = all original, 2 = mixed / other, -1 = cannot tell
+ static int ProbeState(string path, long o, int len, string pr) {
+  if (pr == null || pr.Length < 4 || pr[0] != 'P') return -1;
+  int colon = pr.IndexOf(':'); if (colon < 2) return -1; int CH = Int32.Parse(pr.Substring(1, colon - 1)); if (CH < 1024) return -1;
+  string[] items = pr.Substring(colon + 1).Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries); if (items.Length == 0) return -1;
+  var offs = new long[items.Length]; var sv = new uint[items.Length]; var ov = new uint[items.Length]; long maxK = 0;
+  for (int i = 0; i < items.Length; i++) {
+   int e = items[i].IndexOf('='), sl = items[i].IndexOf('/'); if (e < 1 || sl < e) return -1;
+   offs[i] = Int64.Parse(items[i].Substring(0, e)); sv[i] = Convert.ToUInt32(items[i].Substring(e + 1, sl - e - 1), 16); ov[i] = Convert.ToUInt32(items[i].Substring(sl + 1), 16);
+   if (offs[i] % CH + 4 > CH) return -1; maxK = Math.Max(maxK, offs[i] / CH);
+  }
+  if (!File.Exists(path)) return -1;
+  using (var f = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 16)) {
+   if (f.Length < o + len) return -1;
+   var hb = new byte[48]; f.Position = o; if (f.Read(hb, 0, 48) != 48) return -1;
+   if (hb[0] != 0x49 || hb[1] != 0x44 || hb[2] != 0x52 || hb[3] != 0x4b || BitConverter.ToUInt32(hb, 8) != (uint)len) return -1;
+   long p = o + (long)BitConverter.ToUInt32(hb, 8) - (long)BitConverter.ToUInt32(hb, 16); var lb = new byte[4];
+   var pos = new List<long>(); var lens = new List<int>();
+   while (pos.Count <= maxK) {
+    if (p + 4 > o + len) return -1; f.Position = p; if (f.Read(lb, 0, 4) != 4) return -1;
+    int L = BitConverter.ToInt32(lb, 0); if (L <= 6 || L > (1 << 20)) return -1;
+    pos.Add(p + 4); lens.Add(L); p += 4 + L;
+   }
+   var raw = new Dictionary<long, byte[]>(); int nS = 0, nO = 0;
+   for (int i = 0; i < offs.Length; i++) {
+    long k = offs[i] / CH; int w = (int)(offs[i] % CH); byte[] r;
+    if (!raw.TryGetValue(k, out r)) {
+     var zb = new byte[lens[(int)k]]; f.Position = pos[(int)k]; int got = 0, n; while (got < zb.Length && (n = f.Read(zb, got, zb.Length - got)) > 0) got += n; if (got != zb.Length) return -1;
+     using (var ms = new MemoryStream(zb, 2, zb.Length - 6)) using (var ds = new DeflateStream(ms, CompressionMode.Decompress)) using (var outm = new MemoryStream()) { ds.CopyTo(outm); r = outm.ToArray(); }
+     raw[k] = r;
+    }
+    if (w + 4 > r.Length) return -1;
+    uint v = BitConverter.ToUInt32(r, w); if (v == sv[i]) nS++; else if (v == ov[i]) nO++;
+   }
+   return nS == offs.Length ? 1 : nO == offs.Length ? 0 : 2;
+  }
  }
  public static string Tail(string path, int max) {
   using (var f = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) {

@@ -67,6 +67,7 @@ using System.Security.Cryptography;
 // the copy keeps its exact byte size (re-compressed 16 KB pieces, padded with empty deflate blocks, no piece above 16000 bytes).
 public static class SeasonME {
  public static List<string> Log = new List<string>();
+ public static string LastProbes = ""; public static int LastApplied, LastAlready, LastTheirs;   // v26k48: a few cells of the copy and their season / original values (the installer checks them without inflating it all)
  const int CAP = 16000;
  static uint U32(byte[] b, int o) { return (uint)(b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)); }
  static void P32(byte[] b, int o, uint v) { b[o] = (byte)v; b[o + 1] = (byte)(v >> 8); b[o + 2] = (byte)(v >> 16); b[o + 3] = (byte)(v >> 24); }
@@ -79,13 +80,13 @@ public static class SeasonME {
   public Dictionary<int, byte[]> Raw = new Dictionary<int, byte[]>();
   public Cont(byte[] b) {
    Bytes = b; Hdr = (int)(U32(b, 8) - U32(b, 16)); int p = Hdr;
-   while (true) { int L = (int)U32(b, p); if (L == 0) break; Pos.Add(p + 4); Len.Add(L); p += 4 + L; if (p > b.Length - 4) throw new InvalidDataException("container pieces run past the end"); }
+   while (true) { int L = (int)U32(b, p); if (L == 0) break; Pos.Add(p + 4); Len.Add(L); p += 4 + L; if (p > b.Length - 4) throw new InvalidDataException("자료 조각이 끝을 넘음"); }
    End = p; CH = Piece(0).Length;
   }
   public byte[] Piece(int k) { byte[] r; if (Raw.TryGetValue(k, out r)) return r; r = Inflate(Bytes, Pos[k], Len[k]); Raw[k] = r; return r; }
   public long RawLen { get { return U32(Bytes, 24); } }
   // read n bytes of the raw (uncompressed) data at raw offset o
-  public byte[] ReadRaw(long o, int n) { var outb = new byte[n]; int got = 0; while (got < n) { long q = o + got; int k = (int)(q / CH); int w = (int)(q % CH); byte[] pc = Piece(k); int c = Math.Min(n - got, pc.Length - w); if (c <= 0) throw new InvalidDataException("raw read past the end"); Buffer.BlockCopy(pc, w, outb, got, c); got += c; } return outb; }
+  public byte[] ReadRaw(long o, int n) { var outb = new byte[n]; int got = 0; while (got < n) { long q = o + got; int k = (int)(q / CH); int w = (int)(q % CH); byte[] pc = Piece(k); int c = Math.Min(n - got, pc.Length - w); if (c <= 0) throw new InvalidDataException("자료 끝을 넘어 읽음"); Buffer.BlockCopy(pc, w, outb, got, c); got += c; } return outb; }
  }
  static byte[] Inflate(byte[] b, int off, int len) {
   using (var ms = new MemoryStream(b, off + 2, len - 6)) using (var ds = new DeflateStream(ms, CompressionMode.Decompress)) using (var o = new MemoryStream()) { ds.CopyTo(o); return o.ToArray(); }
@@ -120,19 +121,21 @@ public static class SeasonME {
    byte[] h = c.ReadRaw(0, 64); uint to = U32(h, 0xc); byte[] t = c.ReadRaw(to, 8);
    long o0 = U32(t, 0) + to, o1 = U32(t, 4) + to; start = o0 + 28; width = (int)Math.Round(Math.Sqrt((o1 - o0 - 28) / 4.0));
   }
-  if ((long)width * width * 4 + start > c.RawLen) throw new InvalidDataException("grid larger than the data");
+  if ((long)width * width * 4 + start > c.RawLen) throw new InvalidDataException("높이 판이 자료보다 큼");
  }
  static uint[] ReadGrid(Cont c, long start, int w) { byte[] b = c.ReadRaw(start, w * w * 4); var g = new uint[w * w]; Buffer.BlockCopy(b, 0, g, 0, b.Length); return g; }
  static uint Round64(uint bits) { float f = BitConverter.ToSingle(BitConverter.GetBytes(bits), 0); float r = (float)(Math.Round(f * 64.0) / 64.0); return BitConverter.ToUInt32(BitConverter.GetBytes(r), 0); }
 
- // mode 1 = install (orig -> season), 2 = check only. Returns the new container bytes (same length) or null when nothing to do / not possible.
+ // mode 1 = install (orig -> season), 2 = check only, 3 = take the season back out (season -> orig: uninstall when the other mod's copy got
+ // the season cells some other way, with no backup of ours). Returns the new container bytes (same length) or null when nothing to do / not possible.
  public static byte[] Merge(byte[] meCont, byte[] origCont, byte[] newCont, int kind, int mode, out string report) {
-  report = "";
+  report = ""; LastProbes = ""; LastApplied = 0; LastAlready = 0; LastTheirs = 0;
   var me = new Cont(meCont); var co = new Cont(origCont); var cn = new Cont(newCont);
   long so, sn, sm; int wo, wn, wm;
   Grid(co, kind, out so, out wo); Grid(cn, kind, out sn, out wn); Grid(me, kind, out sm, out wm);
-  if (wo != wn) throw new InvalidDataException("original / season grids differ in size");
+  if (wo != wn) throw new InvalidDataException("순정·계절 높이 판 크기가 다름");
   uint[] go = ReadGrid(co, so, wo), gn = ReadGrid(cn, sn, wn);
+  uint[] gr = (uint[])gn.Clone();   // v26k48: the season values as the season file has them (before rounding)
   if (kind == 1) for (int i = 0; i < gn.Length; i++) if (gn[i] != go[i]) gn[i] = Round64(gn[i]);
   // find where the original map sits inside the bigger grid: look for a 64-value run of the original
   int dr = -1, dc = -1;
@@ -153,37 +156,54 @@ public static class SeasonME {
    }
    if (dr >= 0) break;
   }
-  if (dr < 0) { report = "the original map was not found inside this copy"; return null; }
+  if (dr < 0) { report = "큰 지도 안에서 순정 땅 자리를 못 찾아 그대로 둠"; return null; }
   int same = 0, tot = 0; for (int r = 0; r < wo; r += 37) for (int cc2 = 0; cc2 < wo; cc2 += 41) { tot++; if (gm[(r + dr) * wm + cc2 + dc] == go[r * wo + cc2]) same++; }
-  if (same * 3 < tot) { report = "the copy matches the original map at only " + same + "/" + tot + " sample points - left alone"; return null; }
-  int applied = 0, already = 0, theirs = 0; var touched = new SortedSet<int>();
+  if (same * 3 < tot) { report = "큰 지도가 순정 땅과 " + same + "/" + tot + " 곳만 같아 그대로 둠"; return null; }
+  int applied = 0, already = 0, theirs = 0, nseas = 0; var touched = new SortedSet<int>();
+  var pb = new List<long>(); var ps = new List<uint>(); var po = new List<uint>();   // every 4096th cell that ends as season: probe candidates
   for (int r = 0; r < wo; r++) for (int c = 0; c < wo; c++) {
    int i = r * wo + c; if (go[i] == gn[i]) continue;
-   int j = (r + dr) * wm + c + dc; uint v = gm[j];
-   if (v == gn[i]) { already++; continue; }
-   if (v != go[i]) { theirs++; continue; }
+   int j = (r + dr) * wm + c + dc; uint v = gm[j]; uint tv;
+   long bp = sm + 4L * j;
+   if (mode == 3) {
+    if (v == go[i]) { already++; continue; }
+    if (v != gn[i] && v != gr[i]) { theirs++; continue; }
+    tv = go[i];
+   } else {
+    if (v != gn[i] && v != go[i]) { theirs++; continue; }
+    if ((nseas++ & 4095) == 0 && (bp % me.CH) + 4 <= me.CH) { pb.Add(bp); ps.Add(gn[i]); po.Add(go[i]); }
+    if (v == gn[i]) { already++; continue; }
+    tv = gn[i];
+   }
    applied++;
-   long bp = sm + 4L * j; int k = (int)(bp / me.CH); int w = (int)(bp % me.CH);
-   if (mode == 1) {
+   int k = (int)(bp / me.CH); int w = (int)(bp % me.CH);
+   if (mode == 1 || mode == 3) {
     byte[] pc = me.Piece(k);
-    if (w + 4 <= pc.Length) { P32(pc, w, gn[i]); touched.Add(k); }
+    if (w + 4 <= pc.Length) { P32(pc, w, tv); touched.Add(k); }
     else { // value split over two pieces
-     byte[] nb = BitConverter.GetBytes(gn[i]); for (int q = 0; q < 4; q++) { long bq = bp + q; int kq = (int)(bq / me.CH), wq = (int)(bq % me.CH); me.Piece(kq)[wq] = nb[q]; touched.Add(kq); }
+     byte[] nb = BitConverter.GetBytes(tv); for (int q = 0; q < 4; q++) { long bq = bp + q; int kq = (int)(bq / me.CH), wq = (int)(bq % me.CH); me.Piece(kq)[wq] = nb[q]; touched.Add(kq); }
     }
    }
   }
-  report = "offset rows " + dr + " cols " + dc + " (grid " + wm + ") | season cells written " + applied + ", already season " + already + ", kept the other mod's own " + theirs;
-  if (mode != 1 || applied == 0) return null;
+  if (pb.Count > 0) {   // 24 of them, evenly spread: "P<piece size>:<raw offset>=<season hex>/<original hex>,..."
+   var sbp = new System.Text.StringBuilder(); sbp.Append("P").Append(me.CH).Append(":"); int want = Math.Min(24, pb.Count);
+   for (int t = 0; t < want; t++) { int q = (int)((long)t * pb.Count / want); if (t > 0) sbp.Append(","); sbp.Append(pb[q]).Append("=").Append(ps[q].ToString("x8")).Append("/").Append(po[q].ToString("x8")); }
+   LastProbes = sbp.ToString();
+  }
+  LastApplied = applied; LastAlready = already; LastTheirs = theirs;
+  if (mode == 3) report = "순정 땅 자리 행 +" + dr + " 열 +" + dc + " (" + wm + "판) | 산세 뺌 " + applied + "칸, 이미 순정 " + already + "칸, 맵 확장이 바꾼 칸 " + theirs + "칸은 그대로";
+  else report = "순정 땅 자리 행 +" + dr + " 열 +" + dc + " (" + wm + "판) | 산세 넣음 " + applied + "칸, 이미 들어 있음 " + already + "칸, 맵 확장이 바꾼 칸 " + theirs + "칸은 그대로";
+  if (mode == 2 || applied == 0) return null;
   // re-compress the touched pieces, then pad back to the exact old size
   int n = me.Len.Count; var pieces = new byte[n][]; long oldSum = 0, newSum = 0;
-  for (int k = 0; k < n; k++) { oldSum += me.Len[k]; if (touched.Contains(k)) { pieces[k] = Zlib(me.Raw[k]); if (me.Raw[k].Length != me.CH && k != n - 1) throw new InvalidDataException("uneven piece"); } newSum += touched.Contains(k) ? pieces[k].Length : me.Len[k]; }
+  for (int k = 0; k < n; k++) { oldSum += me.Len[k]; if (touched.Contains(k)) { pieces[k] = Zlib(me.Raw[k]); if (me.Raw[k].Length != me.CH && k != n - 1) throw new InvalidDataException("조각 크기가 고르지 않음"); } newSum += touched.Contains(k) ? pieces[k].Length : me.Len[k]; }
   long slack = oldSum - newSum;
   if (slack < 0) {
    // squeeze untouched pieces (largest first) - only helps if the other mod packed them loosely
    var order = new List<int>(); for (int k = 0; k < n; k++) if (!touched.Contains(k)) order.Add(k);
    order.Sort(delegate(int a, int b) { return me.Len[b].CompareTo(me.Len[a]); });
    foreach (int k in order) { if (slack >= 0) break; byte[] z = Zlib(me.Piece(k)); if (z.Length < me.Len[k]) { slack += me.Len[k] - z.Length; pieces[k] = z; touched.Add(k); } }
-   if (slack < 0) { report += " | does not fit back into the same size (" + slack + " bytes) - left alone"; return null; }
+   if (slack < 0) { report += " | 같은 크기 안에 다시 묶이지 않아(" + slack + "바이트) 그대로 둠"; return null; }
   }
   foreach (int k in new List<int>(touched)) {
    if (slack == 0) break;
@@ -192,20 +212,20 @@ public static class SeasonME {
    byte[] ex = null; for (int a = add; a >= Math.Max(0, add - 12) && ex == null; a--) { if (a == 0) break; ex = Exact(me.Raw[k], cur + a); }
    if (ex == null) continue; slack -= ex.Length - cur; pieces[k] = ex;
   }
-  if (slack != 0) { report += " | could not pad to the exact size (" + slack + ") - left alone"; return null; }
+  if (slack != 0) { report += " | 크기를 정확히 맞추지 못해(" + slack + ") 그대로 둠"; return null; }
   var outb = new byte[meCont.Length];
   Buffer.BlockCopy(meCont, 0, outb, 0, me.Hdr); int p = me.Hdr;
   for (int k = 0; k < n; k++) {
    if (pieces[k] == null) { Buffer.BlockCopy(meCont, me.Pos[k] - 4, outb, p, 4 + me.Len[k]); p += 4 + me.Len[k]; }
-   else { if (pieces[k].Length > CAP) throw new InvalidDataException("piece above 16000 bytes"); P32(outb, p, (uint)pieces[k].Length); Buffer.BlockCopy(pieces[k], 0, outb, p + 4, pieces[k].Length); p += 4 + pieces[k].Length; }
+   else { if (pieces[k].Length > CAP) throw new InvalidDataException("조각이 16000바이트를 넘음"); P32(outb, p, (uint)pieces[k].Length); Buffer.BlockCopy(pieces[k], 0, outb, p + 4, pieces[k].Length); p += 4 + pieces[k].Length; }
   }
-  if (p != me.End) throw new InvalidDataException("rebuilt body length differs");
+  if (p != me.End) throw new InvalidDataException("다시 묶은 길이가 다름");
   Buffer.BlockCopy(meCont, me.End, outb, p, meCont.Length - me.End);
   // verify: every rewritten piece inflates back to the intended data, the rest is untouched
   var chk = new Cont(outb);
-  if (chk.Len.Count != n) throw new InvalidDataException("piece count changed");
-  foreach (int k in touched) { byte[] a = Inflate(outb, chk.Pos[k], chk.Len[k]); byte[] b = me.Raw[k]; if (a.Length != b.Length) throw new InvalidDataException("verify length"); for (int q = 0; q < a.Length; q++) if (a[q] != b[q]) throw new InvalidDataException("verify data"); }
-  report += " | pieces rewritten " + touched.Count + ", exact size kept";
+  if (chk.Len.Count != n) throw new InvalidDataException("조각 수가 달라짐");
+  foreach (int k in touched) { byte[] a = Inflate(outb, chk.Pos[k], chk.Len[k]); byte[] b = me.Raw[k]; if (a.Length != b.Length) throw new InvalidDataException("확인 실패(길이)"); for (int q = 0; q < a.Length; q++) if (a[q] != b[q]) throw new InvalidDataException("확인 실패(내용)"); }
+  report += " | 조각 " + touched.Count + "개 다시 묶음, 크기 그대로";
   return outb;
  }
 }
@@ -225,21 +245,52 @@ try{
    foreach($c in $cands){if(Test-Path $c){$b=[IO.File]::ReadAllBytes($c);if($b.Length -eq $t.Len -and [MS4]::Sha($b) -eq $t.Orig){return ,$b}}}
    return $null
  }
+ # v26k48: the bigger map copies another mod (map expand) appended after our file and pointed the game at - found by the game's own
+ # index (FieldEditor4.rdb: offset@size), the same asset id and size as our target. Each: target, file, offset, size, kind, original, season
+ function ME-Candidates {
+   $script:MEC=New-Object System.Collections.ArrayList;$seen=@{}
+   $idxF=Join-Path $res 'FieldEditor4.rdb';$cands=@()
+   if(Test-Path -LiteralPath $idxF){$txt=[Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($idxF));foreach($m in [regex]::Matches($txt,'([0-9a-f]{1,9})@([0-9a-f]{1,8})')){$cands += ,@([Convert]::ToInt64($m.Groups[1].Value,16),[Convert]::ToInt64($m.Groups[2].Value,16))}}
+   foreach($t in $Targets){
+    if(-not(($t.Name -like 'mhk_*') -or ($t.Name -like 'tex_*'))){continue};if($t.Orig -eq $t.New){continue}
+    $path=Join-Path $res $t.File;if(-not(Test-Path -LiteralPath $path)){continue}
+    $flen=(Get-Item -LiteralPath $path).Length;if($flen -le $t.FileLen){continue}
+    $newC=[MS4]::Read($path,$t.Offset,$t.Len);if([MS4]::Sha($newC) -ne $t.New){Log ($t.File+' ['+$t.Name+']: 계절 자리가 새 산이 아니어서 큰 지도 쪽은 건너뜀');continue}
+    $origC=Find-Original $t;if($null -eq $origC){Log ($t.File+' ['+$t.Name+']: 원본 백업이 없어 큰 지도 쪽은 건너뜀');continue}
+    $aid=[SeasonME]::AssetId($newC);$kind=1;if($t.Name -like 'mhk_*'){$kind=0}
+    foreach($c in $cands){$o=$c[0];$n=$c[1]
+     if($o -lt $t.FileLen -or ($o+$n) -gt $flen -or $n -lt 64){continue}
+     $key=$t.File+'|'+$o;if($seen.ContainsKey($key)){continue}
+     $h=[MS4]::Read($path,$o,48);if([SeasonME]::AssetId($h) -ne $aid){continue};if([BitConverter]::ToUInt32($h,8) -ne $n){continue}
+     $seen[$key]=1;[void]$script:MEC.Add(@($t,$path,$o,$n,$kind,$origC,$newC))
+    }
+   }
+ }
  if($Uninstall){
    Log '산 사진 무늬 + 산 높이 제거 시작'
-   $meMark=Join-Path $game '_SAN14_SeasonMap_terrain_me.txt'
-   if(Test-Path -LiteralPath $meMark){
-     foreach($ln in @(Get-Content -LiteralPath $meMark -Encoding UTF8)){$q=$ln.Split('|');if($q.Count -lt 6){continue}
-       $path=Join-Path $res $q[0];$o=[long]$q[1];$n=[int]$q[2];$bkf=Join-Path $bk ('me_'+$q[5]+'_'+$o+'.idrk')
-       if(-not(Test-Path -LiteralPath $path) -or (Get-Item -LiteralPath $path).Length -lt ($o+$n)){continue}
-       $cur=[MS4]::Sha([MS4]::Read($path,$o,$n))
-       if($cur -ne $q[4]){Log ($q[0]+' 큰 지도 자리 '+$o+': 다른 모드가 이미 새로 써서 그대로 둠');continue}
-       if(-not(Test-Path -LiteralPath $bkf)){Log ($q[0]+' 큰 지도 자리 '+$o+': 백업이 없어 그대로 둠');continue}
-       $b=[IO.File]::ReadAllBytes($bkf);if($b.Length -ne $n -or ($q[3] -and [MS4]::Sha($b) -ne $q[3])){Log ($q[0]+' 큰 지도 자리 '+$o+': 백업이 맞지 않아 그대로 둠');continue}
-       [MS4]::Write($path,$o,$b);Log ('큰 지도 자리 원래대로: '+$q[0]+' '+$o+' ['+$q[5]+']')
-     }
-     Remove-Item -LiteralPath $meMark -Force
-   }
+   $meMark=Join-Path $game '_SAN14_SeasonMap_terrain_me.txt';$mk=@{}
+   if(Test-Path -LiteralPath $meMark){foreach($ln in @(Get-Content -LiteralPath $meMark -Encoding UTF8)){$q=$ln.Trim([char]0xFEFF).Split('|');if($q.Count -ge 6){$mk[$q[0]+'|'+$q[1]]=$q}}}
+   # v26k48: the bigger map copy (map expand): our backup when the copy is still exactly what we wrote, otherwise the season cells
+   #         are taken back out by content (only cells holding the season value go back to the original; the other mod's own cells stay)
+   try{
+    if(-not $script:MEOK){throw ('도우미 준비 실패: '+$script:MEERR)}
+    ME-Candidates
+    foreach($c in $script:MEC){$t=$c[0];$path=$c[1];$o=$c[2];$n=$c[3];$kind=$c[4]
+      $cur=[MS4]::Read($path,$o,[int]$n);$curSha=[MS4]::Sha($cur);$key=$t.File+'|'+$o;$bkf=Join-Path $bk ('me_'+$t.Name+'_'+$o+'.idrk')
+      if($mk.ContainsKey($key) -and $mk[$key][4] -eq $curSha -and (Test-Path -LiteralPath $bkf)){
+        $b=[IO.File]::ReadAllBytes($bkf)
+        if($b.Length -eq $n -and (-not $mk[$key][3] -or [MS4]::Sha($b) -eq $mk[$key][3])){[MS4]::Write($path,$o,$b);Log ('큰 지도 자리 원래대로(백업): '+$t.File+' '+$o+' ['+$t.Name+']');continue}
+      }
+      $rep=$null;$out=[SeasonME]::Merge($cur,$c[5],$c[6],$kind,3,[ref]$rep)
+      Log ($t.File+' ['+$t.Name+'] 큰 지도 자리 '+$o+': '+$rep)
+      if($null -ne $out){
+        [MS4]::Write($path,$o,$out)
+        if([MS4]::Sha([MS4]::Read($path,$o,[int]$n)) -ne [MS4]::Sha($out)){[MS4]::Write($path,$o,$cur);throw '큰 지도 자리 쓰기 확인 실패 - 원래대로 되돌림'}
+        Log ('큰 지도 자리 산세를 뺐습니다: '+$t.File+' '+$o+' ['+$t.Name+']')
+      }
+    }
+   }catch{Log ('큰 지도(다른 모드) 쪽 산세 빼기는 건너뜀: '+$_.Exception.Message)}
+   if(Test-Path -LiteralPath $meMark){Remove-Item -LiteralPath $meMark -Force}
    $todo=@()
    foreach($t in $Targets){
      $path=Join-Path $res $t.File;if(-not(Test-Path $path)){continue}
@@ -304,35 +355,22 @@ try{
  # ---- v26k47: 맵 확장 등 다른 모드가 같은 파일 뒤에 붙인 '큰 지도' 높이 자료에도 산세 넣기 (그 모드가 바꾼 칸은 그대로) ----
  try{
   if(-not $script:MEOK){throw ('도우미 준비 실패: '+$script:MEERR)}
-  $meMark=Join-Path $game '_SAN14_SeasonMap_terrain_me.txt';$marks=@();$seen=@{}
-  $idxF=Join-Path $res 'FieldEditor4.rdb';$cands=@()
-  if(Test-Path -LiteralPath $idxF){$txt=[Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($idxF));foreach($m in [regex]::Matches($txt,'([0-9a-f]{1,9})@([0-9a-f]{1,8})')){$cands += ,@([Convert]::ToInt64($m.Groups[1].Value,16),[Convert]::ToInt64($m.Groups[2].Value,16))}}
-  foreach($t in $Targets){
-   if(-not(($t.Name -like 'mhk_*') -or ($t.Name -like 'tex_*'))){continue};if($t.Orig -eq $t.New){continue}
-   $path=Join-Path $res $t.File;if(-not(Test-Path -LiteralPath $path)){continue}
-   $flen=(Get-Item -LiteralPath $path).Length;if($flen -le $t.FileLen){continue}
-   $newC=[MS4]::Read($path,$t.Offset,$t.Len);if([MS4]::Sha($newC) -ne $t.New){Log ($t.File+' ['+$t.Name+']: 계절 자리가 새 산이 아니어서 큰 지도 쪽은 건너뜀');continue}
-   $origC=Find-Original $t;if($null -eq $origC){Log ($t.File+' ['+$t.Name+']: 원본 백업이 없어 큰 지도 쪽은 건너뜀');continue}
-   $aid=[SeasonME]::AssetId($newC);$kind=1;if($t.Name -like 'mhk_*'){$kind=0}
-   foreach($c in $cands){$o=$c[0];$n=$c[1]
-    if($o -lt $t.FileLen -or ($o+$n) -gt $flen -or $n -lt 64){continue}
-    $key=$t.File+'|'+$o;if($seen.ContainsKey($key)){continue}
-    $h=[MS4]::Read($path,$o,48);if([SeasonME]::AssetId($h) -ne $aid){continue};if([BitConverter]::ToUInt32($h,8) -ne $n){continue}
-    $seen[$key]=1
+  $meMark=Join-Path $game '_SAN14_SeasonMap_terrain_me.txt';$marks=@()
+  ME-Candidates
+  foreach($c in $script:MEC){$t=$c[0];$path=$c[1];$o=$c[2];$n=$c[3];$kind=$c[4]
     $cur=[MS4]::Read($path,$o,[int]$n);$curSha=[MS4]::Sha($cur)
     $bkf=Join-Path $bk ('me_'+$t.Name+'_'+$o+'.idrk')
-    $rep=$null;$out=[SeasonME]::Merge($cur,$origC,$newC,$kind,1,[ref]$rep)
+    $rep=$null;$out=[SeasonME]::Merge($cur,$c[5],$c[6],$kind,1,[ref]$rep);$pr=[SeasonME]::LastProbes
     Log ($t.File+' ['+$t.Name+'] 큰 지도 자리 '+$o+': '+$rep)
     if($null -ne $out){
       if(-not(Test-Path -LiteralPath $bkf)){[IO.File]::WriteAllBytes($bkf,$cur)};if([MS4]::Sha([IO.File]::ReadAllBytes($bkf)) -ne $curSha){throw '큰 지도 자리 백업 저장 실패'}
       [MS4]::Write($path,$o,$out);$back=[MS4]::Read($path,$o,[int]$n);$nsha=[MS4]::Sha($back)
       if($nsha -ne [MS4]::Sha($out)){[MS4]::Write($path,$o,$cur);throw '큰 지도 자리 쓰기 확인 실패 - 원래대로 되돌림'}
-      $marks += ($t.File+'|'+$o+'|'+$n+'|'+$curSha+'|'+$nsha+'|'+$t.Name);Log ($t.File+' ['+$t.Name+']: 큰 지도 쪽 산세 적용 완료')
-    }elseif($rep -like '*season cells written 0,*' -and $rep -notlike '*already season 0,*'){
+      $marks += ($t.File+'|'+$o+'|'+$n+'|'+$curSha+'|'+$nsha+'|'+$t.Name+'|'+$pr);Log ($t.File+' ['+$t.Name+']: 큰 지도 쪽 산세 적용 완료')
+    }elseif([SeasonME]::LastApplied -eq 0 -and [SeasonME]::LastAlready -gt 0){
       $osha='';if(Test-Path -LiteralPath $bkf){$osha=[MS4]::Sha([IO.File]::ReadAllBytes($bkf))}
-      $marks += ($t.File+'|'+$o+'|'+$n+'|'+$osha+'|'+$curSha+'|'+$t.Name);Log ($t.File+' ['+$t.Name+']: 큰 지도 쪽은 이미 산세가 들어 있음')
+      $marks += ($t.File+'|'+$o+'|'+$n+'|'+$osha+'|'+$curSha+'|'+$t.Name+'|'+$pr);Log ($t.File+' ['+$t.Name+']: 큰 지도 쪽은 이미 산세가 들어 있음')
     }
-   }
   }
   if($marks.Count -gt 0){Set-Content -LiteralPath $meMark -Encoding UTF8 -Value $marks}elseif(Test-Path -LiteralPath $meMark){Remove-Item -LiteralPath $meMark -Force}
  }catch{Log ('큰 지도(다른 모드) 쪽 산세 넣기는 건너뜀: '+$_.Exception.Message)}

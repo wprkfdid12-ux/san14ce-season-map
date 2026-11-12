@@ -31,6 +31,12 @@ void gridInit()
     if (!(g.z > 500.0 && g.z < 900.0 && g.w > 300.0 && g.w < 600.0)) g = float4(37594.0, 13335.2998, 702.0, 468.0);
     CW_ = g.z; CH_ = g.w * 1.7320508; C0_ = float2(g.x, g.y + CH_ * 0.5);
 }
+float2 sanSH()                                       // v26k48: how far a map mod moved the old land (list 3420 against the game's own grid; 0 without one)
+{
+    float4 g = IniParams.Load(int2(3420, 0));
+    float2 s = (g.z > 500.0 && g.z < 900.0 && g.w > 300.0 && g.w < 600.0) ? float2(g.x - 37594.0, g.y - 13335.2998) : float2(0.0, 0.0);
+    return (abs(s.x) < 1.0 && abs(s.y) < 1.0) ? float2(0.0, 0.0) : s;
+}
 float hexIdxAt(float2 wp)                            // the cell under a world point (the game's nearest-centre rule), -1 off the map
 {
     float c0 = floor((wp.x - C0_.x) / CW_); float bestD = 1e12, best = -1.0;
@@ -152,7 +158,8 @@ V2P main(uint vid : SV_VertexID)
     float2 tc = (float2((float)tx, (float)ty) + 0.5) * tsz;                    // this tile's centre on the screen
     float dT; float3 PT = worldAtPx(tc, scr, dT);
     if (dT <= 0.0 || dT >= 0.99999) { O.pos = o0; O.t0 = t0; O.t1 = t1; O.t2 = t2; O.t3 = t3; return O; }                                   // sky or nothing under this tile
-    if (PT.x < 0.0 || PT.x > MAPW || PT.z < 0.0 || PT.z > MAPW) { O.pos = o0; O.t0 = t0; O.t1 = t1; O.t2 = t2; O.t3 = t3; return O; }
+    float2 PTV = PT.xz - sanSH(); if (PTV.x < 0.0 || PTV.x > MAPW || PTV.y < 0.0 || PTV.y > MAPW) {   // v26k48: the old map's place
+    O.pos = o0; O.t0 = t0; O.t1 = t1; O.t2 = t2; O.t3 = t3; return O; }
     float3 E = cb0[13].xyz;
     float camH = max(E.y - 1250.0, 500.0);
     float pxG;

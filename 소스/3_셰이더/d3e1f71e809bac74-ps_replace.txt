@@ -62,6 +62,27 @@ Texture2D<float4> TexTags     : register(t103);   // v26: the named mountain sit
 static const float PI2 = 6.2831853;
 static const float MAPW = 204800.0;
 
+// v26k48: a map mod that makes the map bigger (맵 확장 137: 4097 samples, the old land moved down by 1170 samples = +117000 in z)
+//         moves the game's hex grid by the same amount (list 3420 = the grid the rules module reads from the game). The season
+//         picture is worked out in the old map's place (SAN_SH taken off the world point, the season maps are the old map's);
+//         the game's own maps (land height, control map) are read at the game's size (SAN_MW). Land outside the old map keeps the
+//         game's own picture. With no such mod the shift is 0 and the map 204800 wide: SAN_ON stays false, every path as before.
+static float2 SAN_SH = float2(0.0, 0.0); static float SAN_MW = 204800.0; static bool SAN_ON = false; static bool SAN_SKIP = false; static int SAN_LC = 2048;
+void sanInit()
+{
+    float4 g = IniParams.Load(int2(3420, 0));
+    bool gok = g.z > 500.0 && g.z < 900.0 && g.w > 300.0 && g.w < 600.0;
+    SAN_SH = (g.z > 500.0 && g.z < 900.0 && g.w > 300.0 && g.w < 600.0) ? float2(g.x - 37594.0, g.y - 13335.2998) : float2(0.0, 0.0);
+    if (abs(SAN_SH.x) < 1.0 && abs(SAN_SH.y) < 1.0) SAN_SH = float2(0.0, 0.0);
+    uint lw, lh; LandHeight.GetDimensions(lw, lh);
+    SAN_MW = lw < 3000u ? 204800.0 : (float)(lw - 1u) * 100.0;
+    SAN_ON = SAN_SH.x != 0.0 || SAN_SH.y != 0.0 || SAN_MW != MAPW;
+    SAN_SKIP = !gok && lw >= 3000u;                             // a bigger map but the grid not known yet: draw nothing rather than misplace it
+    uint cw0, ch0; LandControl.GetDimensions(cw0, ch0);
+    SAN_LC = SAN_ON ? (int)cw0 - 1 : 2048;
+}
+float landS(float2 u) { return LandHeight.SampleLevel(sClamp, SAN_ON ? (u * MAPW + SAN_SH) / SAN_MW : u, 0); }   // old-map uv -> the game's height map
+
 // material id (control map R/G) -> detail slice (from the game's material table)
 static const int MAT2SLICE[18] = {12,16,15,10,7,11,8,17,13,14,5,0,4,3,2,5,6,7};
 // per detail slice: how much of it is vegetation, and whether it is farmland
@@ -84,14 +105,14 @@ float bell(float x, float c, float w) { float d = (x - c) / w; return exp(-d * d
 
 void matinfo(float2 uv, out float veg, out float farm, out float bare)
 {
-    float2 t = uv * 2048.0;
+    float2 t = SAN_ON ? (uv * MAPW + SAN_SH) * 0.01 : uv * 2048.0;   // v26k48: the game's control map (100 world units a texel)
     float2 f = frac(t);
     int2 b = int2(floor(t));
     veg = 0; farm = 0; bare = 0;
     [unroll] for (int k = 0; k < 4; k++) {
         int2 o = int2(k & 1, k >> 1);
         float wgt = (o.x ? f.x : 1 - f.x) * (o.y ? f.y : 1 - f.y);
-        float4 c = LandControl.Load(int3(clamp(b + o, 0, 2048), 0));
+        float4 c = LandControl.Load(int3(clamp(b + o, 0, SAN_LC), 0));
         int ia = min((int)round(c.r * 255.0), 17), ib = min((int)round(c.g * 255.0), 17);
         int sa = MAT2SLICE[ia], sb = MAT2SLICE[ib];
         float bw = saturate(c.b);
@@ -161,6 +182,7 @@ void gridInit()
 {
     float4 g = IniParams.Load(int2(3420, 0));
     if (!(g.z > 500.0 && g.z < 900.0 && g.w > 300.0 && g.w < 600.0)) g = float4(37594.0, 13335.2998, 702.0, 468.0);
+    g.xy -= SAN_SH;                                   // v26k48: in the old map's place (0 without a map mod)
     CW_ = g.z; CH_ = g.w * 1.7320508; C0_ = float2(g.x, g.y + CH_ * 0.5);
 }
 float hexIdxAt(float2 wp)                            // the cell under a world point (the game's nearest-centre rule), -1 off the map
@@ -326,8 +348,8 @@ void drawSlide(inout float3 A, inout float3 M, float2 wp, float2 cw, float2 rel,
 {
     float a;
     float2 luv = cw / MAPW;
-    float lgx = LandHeight.SampleLevel(sClamp, luv + float2(4.0 / 2048.0, 0), 0) - LandHeight.SampleLevel(sClamp, luv - float2(4.0 / 2048.0, 0), 0);
-    float lgz = LandHeight.SampleLevel(sClamp, luv + float2(0, 4.0 / 2048.0), 0) - LandHeight.SampleLevel(sClamp, luv - float2(0, 4.0 / 2048.0), 0);
+    float lgx = landS(luv + float2(4.0 / 2048.0, 0)) - landS(luv - float2(4.0 / 2048.0, 0));
+    float lgz = landS(luv + float2(0, 4.0 / 2048.0)) - landS(luv - float2(0, 4.0 / 2048.0));
     float2 dn = -normalize(float2(lgx, lgz) + float2(0.0001, 0.0));
     float lu = dot(rel, dn), lv = dot(rel, float2(-dn.y, dn.x));
     float3 rk = TexRegion.SampleLevel(sClamp, uv, 0).rgb;
@@ -504,8 +526,8 @@ void season(float2 uv, float3 nrm, float2 wxz, float h, float wy, out float3 A, 
     float veg, farm, bare; matinfo(uv, veg, farm, bare);
     // v23: slope from the height map itself (the same near and far; the far terrain's own normal changes with zoom)
     float2 e1 = float2(1.0 / 2048.0, 0), e2 = float2(0, 1.0 / 2048.0);
-    float gx = (LandHeight.SampleLevel(sClamp, uv + e1, 0) - LandHeight.SampleLevel(sClamp, uv - e1, 0)) / 200.0;
-    float gz = (LandHeight.SampleLevel(sClamp, uv + e2, 0) - LandHeight.SampleLevel(sClamp, uv - e2, 0)) / 200.0;
+    float gx = (landS(uv + e1) - landS(uv - e1)) / 200.0;
+    float gz = (landS(uv + e2) - landS(uv - e2)) / 200.0;
     float3 nn = normalize(float3(-gx, 1.0, -gz));
     float ny = nn.y;
 
@@ -557,12 +579,12 @@ void season(float2 uv, float3 nrm, float2 wxz, float h, float wy, out float3 A, 
     float2 t1 = float2(3.0 / 2048.0, 0), t2 = float2(0, 3.0 / 2048.0);
     float2 u1 = float2(9.0 / 2048.0, 0), u2 = float2(0, 9.0 / 2048.0);
     float2 w1 = float2(20.0 / 2048.0, 0), w2 = float2(0, 20.0 / 2048.0);
-    float hn = (LandHeight.SampleLevel(sClamp, uv + t1, 0) + LandHeight.SampleLevel(sClamp, uv - t1, 0)
-              + LandHeight.SampleLevel(sClamp, uv + t2, 0) + LandHeight.SampleLevel(sClamp, uv - t2, 0)) * 0.25;
-    float hw = (LandHeight.SampleLevel(sClamp, uv + u1, 0) + LandHeight.SampleLevel(sClamp, uv - u1, 0)
-              + LandHeight.SampleLevel(sClamp, uv + u2, 0) + LandHeight.SampleLevel(sClamp, uv - u2, 0)) * 0.25;
-    float hW = (LandHeight.SampleLevel(sClamp, uv + w1, 0) + LandHeight.SampleLevel(sClamp, uv - w1, 0)
-              + LandHeight.SampleLevel(sClamp, uv + w2, 0) + LandHeight.SampleLevel(sClamp, uv - w2, 0)) * 0.25;
+    float hn = (landS(uv + t1) + landS(uv - t1)
+              + landS(uv + t2) + landS(uv - t2)) * 0.25;
+    float hw = (landS(uv + u1) + landS(uv - u1)
+              + landS(uv + u2) + landS(uv - u2)) * 0.25;
+    float hW = (landS(uv + w1) + landS(uv - w1)
+              + landS(uv + w2) + landS(uv - w2)) * 0.25;
     float cav = (hn - h) * 0.6 + (hw - h) * 0.4;          // > 0 in valleys, < 0 on crests (small scale)
     float cavW = hW - h;                                   // saddles between summits (large scale)
     float reliefF = smoothstep(80.0, 600.0, alt + abs(hw - h) * 2.0);
@@ -2608,11 +2630,14 @@ void main(float4 v0 : SV_Position,
     game_main(v0, v1, v2, v3, v4, v5, v6, v7, o0, o1, o2, o3, o4);
     // ---- the season picture, in the same pass (v26k27). Way 0 only; ways 1 and 2 leave the game's colour as it is ----
     float4 pm98 = IniParams.Load(int2(98, 0));
+    sanInit();                                        // v26k48: a bigger map / the old land moved (0 and the old size without a map mod)
     float2 uv = v7.xy;
     float h = LandHeight.SampleLevel(sClamp, uv, 0);
-    float2 wxzK = v4.xz; float wyK = v4.y;
+    [flatten] if (SAN_ON) uv = (uv * SAN_MW - SAN_SH) / MAPW;   // the old map's uv (the season maps are the old map's)
+    float2 wxzK = v4.xz - SAN_SH; float wyK = v4.y;
+    bool sanIn = !SAN_ON || (!SAN_SKIP && all(uv >= 0.0) && all(uv <= 1.0));   // new land: the game's own picture
     g_dx = ddx(wxzK); g_dy = ddy(wxzK); g_dhx = ddx(wyK); g_dhy = ddy(wyK);
-    [branch] if (pm98.x < 0.5 || pm98.x > 2.5) {   // way 0 (and the speed test's way 3: new, rain picture off)
+    [branch] if (sanIn && (pm98.x < 0.5 || pm98.x > 2.5)) {   // way 0 (and the speed test's way 3: new, rain picture off)
         int2 hpSea = clamp(int2(saturate(uv) * 512.0), 0, 511);
         float seaG = TexHazard.Load(int3(hpSea, 0)).g;
         [branch] if (!(h < 740.0 && seaG < 0.1)) {   // nothing is painted on the sea floor (as before: the game's colour stays)
@@ -2638,7 +2663,7 @@ void main(float4 v0 : SV_Position,
             }
             [branch] if (!hit) {
                 float dynT;
-                season(uv, v6.xyz, v4.xz, h, v4.y, A, M, dynT);
+                season(uv, v6.xyz, wxzK, h, v4.y, A, M, dynT);
                 [branch] if (reuseOK && dynT < 0.5) {
                     uint3 ua = asuint(A), um = asuint(M);
                     SeasonCache[uint3(px, 0)] = ua.x; SeasonCache[uint3(px, 1)] = ua.y; SeasonCache[uint3(px, 2)] = ua.z; SeasonCache[uint3(px, 3)] = key.x;

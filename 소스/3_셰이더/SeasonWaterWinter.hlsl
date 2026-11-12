@@ -25,6 +25,12 @@ void gridInit()
     if (!(g.z > 500.0 && g.z < 900.0 && g.w > 300.0 && g.w < 600.0)) g = float4(37594.0, 13335.2998, 702.0, 468.0);
     CW_ = g.z; CH_ = g.w * 1.7320508; C0_ = float2(g.x, g.y + CH_ * 0.5);
 }
+float2 sanSH()                                       // v26k48: how far a map mod moved the old land (list 3420 against the game's own grid; 0 without one)
+{
+    float4 g = IniParams.Load(int2(3420, 0));
+    float2 s = (g.z > 500.0 && g.z < 900.0 && g.w > 300.0 && g.w < 600.0) ? float2(g.x - 37594.0, g.y - 13335.2998) : float2(0.0, 0.0);
+    return (abs(s.x) < 1.0 && abs(s.y) < 1.0) ? float2(0.0, 0.0) : s;
+}
 float hexIdxAt(float2 wp)                            // the cell under a world point (the game's nearest-centre rule), -1 off the map
 {
     float c0 = floor((wp.x - C0_.x) / CW_); float bestD = 1e12, best = -1.0;
@@ -416,14 +422,15 @@ void main(float4 v0 : SV_ClipDistance1,
     {
         float4 ip = IniParams.Load(int2(0, 0));
         float3 wp = v5.xyz;
-        float2 muv = wp.xz / 204800.0;
+        float2 sanS = sanSH(); float2 muv = (wp.xz - sanS) / 204800.0;   // v26k48: the old map's place (the grid below stays the game's)
+        bool sanIn = (sanS.x == 0.0 && sanS.y == 0.0) || (all(muv >= 0.0) && all(muv <= 1.0));   // new land: the game's water
         float4 pv = IniParams.Load(int2(99, 0));                                      // v26k16: the test build's snow and ice preview (z = 1)
         float prevOn = (pv.z > 0.5 && pv.y > 0.5 && pv.y < 36.5) ? 1.0 : 0.0;
         float4 wctlW = IniParams.Load(int2(100, 0)), dlkW = IniParams.Load(int2(60, 0));
         float rulesW = (wctlW.w > 0.5 && abs(wctlW.z - 26.0) < 0.5 && dlkW.w > 0.5 && prevOn < 0.5) ? 1.0 : 0.0;   // v26k30: the rules say which cells are frozen
         float iceW = 0.0;
         [branch] if (rulesW > 0.5) { gridInit(); iceW = wxBits(cellWx(hexIdxAt(wp.xz)), 5.0, 1.0); }
-        float mk = (ip.x > 0.5 && ip.y > 0.5 && (rulesW > 0.5 ? iceW > 0.5 : (ip.x < 2.5 || ip.x > 8.5 || prevOn > 0.5))) ? FreezeMask.SampleLevel(s3, muv, 0) : 0.0;   // v25.9i: 3-8월 the water is the game's own (v26k30: with the rules, the frozen cells)
+        float mk = (sanIn && ip.x > 0.5 && ip.y > 0.5 && (rulesW > 0.5 ? iceW > 0.5 : (ip.x < 2.5 || ip.x > 8.5 || prevOn > 0.5))) ? FreezeMask.SampleLevel(s3, muv, 0) : 0.0;   // v25.9i: 3-8월 the water is the game's own (v26k30: with the rules, the frozen cells)
         if (mk > 0.002) {
             float4 ip1 = IniParams.Load(int2(1, 0));
             float xun = (ip1.x >= 0.0 && ip1.x <= 2.0) ? round(ip1.x) : 1.0;
@@ -463,7 +470,7 @@ void main(float4 v0 : SV_ClipDistance1,
                         float lin = 1.0 / saturate(cb0[12].y * t2.SampleLevel(s2, suv, 0).x + cb0[12].x);
                         float sd = dot(v5.xyz - cb0[13].xyz, cb0[14].xyz);
                         float3 Pb = cb0[13].xyz + (v5.xyz - cb0[13].xyz) * (lin / max(sd, 1.0));
-                        float bed = LandHeightW.SampleLevel(sWrapW, Pb.xz / 204800.0, 0) * 1.6;   // the map's height units x 1.6 = world height (as the ground shader)
+                        float bed = LandHeightW.SampleLevel(sWrapW, Pb.xz / (hw0 < 3000u ? 204800.0 : (float)(hw0 - 1u) * 100.0), 0) * 1.6;   // v26k48: the game's map size   // the map's height units x 1.6 = world height (as the ground shader)
                         under = smoothstep(60.0, 140.0, Pb.y - bed) * step(Pb.y, wp.y + 20.0);
                     }
                 }

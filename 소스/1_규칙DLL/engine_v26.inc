@@ -807,7 +807,7 @@ static void grid_params(float *g)
     u32 rx0 = GA(0x1a20578), rz0 = GA(0x2141a80); if (!rcw || !rr || !rx0 || !rz0) return;
     float *x0 = (float *)(game + rx0), *z0 = (float *)(game + rz0), *cw = (float *)(game + rcw), *r = (float *)(game + rr);
     if (!readable(x0, 4) || !readable(z0, 4) || !readable(cw, 4) || !readable(r, 4)) return;
-    if (!(*cw > 500.0f && *cw < 900.0f && *r > 300.0f && *r < 600.0f && *x0 > -50000.0f && *x0 < 100000.0f && *z0 > -50000.0f && *z0 < 100000.0f)) return;
+    if (!(*cw > 500.0f && *cw < 900.0f && *r > 300.0f && *r < 600.0f && *x0 > -50000.0f && *x0 < 1000000.0f && *z0 > -50000.0f && *z0 < 1000000.0f)) return;   /* v26k48: the map mod (맵 확장 137) moves Z0 by +117000 (130335) */
     g[0] = *x0; g[1] = *z0; g[2] = *cw; g[3] = *r;
 }
 static int cell_wx(int c, int t)

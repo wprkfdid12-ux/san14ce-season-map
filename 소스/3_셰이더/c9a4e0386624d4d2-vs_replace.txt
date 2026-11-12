@@ -6,6 +6,12 @@
 //   earthquake: along the fault one side drops, leaving a low scarp you can see on slopes and plains alike
 // No disaster on the map = nothing changes (the loop ends at once).
 Texture1D<float4> IniParams : register(t120);
+float2 sanSH()                                       // v26k48: how far a map mod moved the old land (list 3420 against the game's own grid; 0 without one)
+{
+    float4 g = IniParams.Load(int2(3420, 0));
+    float2 s = (g.z > 500.0 && g.z < 900.0 && g.w > 300.0 && g.w < 600.0) ? float2(g.x - 37594.0, g.y - 13335.2998) : float2(0.0, 0.0);
+    return (abs(s.x) < 1.0 && abs(s.y) < 1.0) ? float2(0.0, 0.0) : s;
+}
 float sr_hash21(float2 p) { p = frac(p * float2(123.34, 456.21)); p += dot(p, p + 45.32); return frac(p.x * p.y); }
 float sr_vnoise(float2 p)
 {
@@ -119,10 +125,11 @@ void terrain(uint vid, float4 v1, float3 v2, float3 v3, float4 v4, float4 v5,
     float b0 = 0.0, bx0 = 0.0, bx1 = 0.0, bz0 = 0.0, bz1 = 0.0;
     float d = 1.0 / cb0[4].x * 1.1;
     [branch] if (evn > 0.5) {
-        b0 = sr_bump(wpos.xz);
+        float2 sanP = wpos.xz - sanSH();              // v26k48: the disasters are on the old map's cells
+        b0 = sr_bump(sanP);
         float ex = d * v3.x / max(abs(v4.z - v4.x), 1e-6), ez = d * v3.z / max(abs(v4.w - v4.y), 1e-6);
-        bx0 = sr_bump(wpos.xz - float2(ex, 0)); bx1 = sr_bump(wpos.xz + float2(ex, 0));
-        bz0 = sr_bump(wpos.xz - float2(0, ez)); bz1 = sr_bump(wpos.xz + float2(0, ez));
+        bx0 = sr_bump(sanP - float2(ex, 0)); bx1 = sr_bump(sanP + float2(ex, 0));
+        bz0 = sr_bump(sanP - float2(0, ez)); bz1 = sr_bump(sanP + float2(0, ez));
         float sy = abs(v3.y) > 1e-6 ? v3.y : 1.0;
         r3.y += b0 / sy; wpos.y += b0;
         bx0 /= sy; bx1 /= sy; bz0 /= sy; bz1 /= sy;

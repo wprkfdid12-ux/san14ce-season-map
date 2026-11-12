@@ -33,6 +33,12 @@ void gridInit()
     if (!(g.z > 500.0 && g.z < 900.0 && g.w > 300.0 && g.w < 600.0)) g = float4(37594.0, 13335.2998, 702.0, 468.0);
     CW_ = g.z; CH_ = g.w * 1.7320508; C0_ = float2(g.x, g.y + CH_ * 0.5);
 }
+float2 sanSH()                                       // v26k48: how far a map mod moved the old land (list 3420 against the game's own grid; 0 without one)
+{
+    float4 g = IniParams.Load(int2(3420, 0));
+    float2 s = (g.z > 500.0 && g.z < 900.0 && g.w > 300.0 && g.w < 600.0) ? float2(g.x - 37594.0, g.y - 13335.2998) : float2(0.0, 0.0);
+    return (abs(s.x) < 1.0 && abs(s.y) < 1.0) ? float2(0.0, 0.0) : s;
+}
 float hexIdxAt(float2 wp)                            // the cell under a world point (the game's nearest-centre rule), -1 off the map
 {
     float c0 = floor((wp.x - C0_.x) / CW_); float bestD = 1e12, best = -1.0;
@@ -167,7 +173,7 @@ void main(float4 pos : SV_Position, float4 ndc4 : TEXCOORD0, out float4 o0 : SV_
     float3 P = worldAt(ndc, d);
     float3 E = cb0[16].xyz;
     float2 wp = P.xz;
-    if (wp.x < 0.0 || wp.x > MAPW || wp.y < 0.0 || wp.y > MAPW) discard;
+    { float2 wpV = wp - sanSH(); if (wpV.x < 0.0 || wpV.x > MAPW || wpV.y < 0.0 || wpV.y > MAPW) discard; }   // v26k48: the old map's place
     float tm = ip2.y;
     float2 scr = float2((float)W, (float)H);
     float2 sscr = float2((float)SW, (float)SH);

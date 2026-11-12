@@ -39,6 +39,12 @@ float4x4 inv4(float4x4 m)
     r[3] = float4(a11 * b07 - a10 * b09 - a12 * b06, a00 * b09 - a01 * b07 + a02 * b06, a31 * b01 - a30 * b03 - a32 * b00, a20 * b03 - a21 * b01 + a22 * b00);
     return r * id;
 }
+float2 sanSH()                                       // v26k48: how far a map mod moved the old land (list 3420 against the game's own grid; 0 without one)
+{
+    float4 g = IniParams.Load(int2(3420, 0));
+    float2 s = (g.z > 500.0 && g.z < 900.0 && g.w > 300.0 && g.w < 600.0) ? float2(g.x - 37594.0, g.y - 13335.2998) : float2(0.0, 0.0);
+    return (abs(s.x) < 1.0 && abs(s.y) < 1.0) ? float2(0.0, 0.0) : s;
+}
 // world position of a pixel: ndc = (x, y, depth) ; clip = [world,1] * M
 float3 tree_world(float3 ndc)
 {
@@ -81,7 +87,7 @@ float tnodeAt(int base, float2 uv)
 }
 void tree_climate(float3 w, float month, out float T, out float warm, out float snowT, out float ev, out float wM)
 {
-    float2 uv = saturate(w.xz / 204800.0);
+    float2 uv = saturate((w.xz - sanSH()) / 204800.0);   // v26k48: the old map's place
     float4 ip1 = IniParams.Load(int2(1, 0));
     float xun = (ip1.x >= 0.0 && ip1.x <= 2.0) ? round(ip1.x) : 1.0;
     // v26h: the same calendar as the ground (v25.9i: KOEI's seasons - game month m shows the real climate of month m+2);
@@ -131,8 +137,12 @@ void main(float4 pos : SV_Position, float2 v1 : TEXCOORD0)
     if (a - cb0[0].w < 0) discard;
 
     float4 ip = IniParams.Load(int2(0, 0));
-    if (tree_active() && ip.x > 0.5 && ip.y > 0.5 && 0 < cb0[1].x) {
-        float3 w = tree_world(float3(0.0, 0.0, 0.5));
+    bool sanTr = tree_active() && ip.x > 0.5 && ip.y > 0.5 && 0 < cb0[1].x; float3 sanW = float3(0.0, 0.0, 0.0);
+    [branch] if (sanTr) {                       // v26k48: trees on land outside the old map keep the game's look
+        sanW = tree_world(float3(0.0, 0.0, 0.5)); float2 sanS = sanSH(), sanQ = (sanW.xz - sanS) / 204800.0;
+        sanTr = (sanS.x == 0.0 && sanS.y == 0.0) || (all(sanQ >= 0.0) && all(sanQ <= 1.0)); }
+    if (sanTr) {
+        float3 w = sanW;
         float T, warm, snowT, ev, wM; tree_climate(w, ip.x, T, warm, snowT, ev, wM);
         if (leaf_gone(v1.xy, bareness(T, warm, ev), leafness(tex.xyz))) discard;
     }
