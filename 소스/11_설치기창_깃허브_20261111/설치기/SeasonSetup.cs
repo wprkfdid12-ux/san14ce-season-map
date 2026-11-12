@@ -276,6 +276,7 @@ static class Checker {
   else s.Coexist.Add(new[] { "통합패치", "없음", "mute" });
   bool mapx = Directory.Exists(Path.Combine(game, ".san14ce_mapexpand")) || File.Exists(Path.Combine(game, "SAN14CE_MapExpand_helper.log"));
   s.Coexist.Add(mapx ? new[] { "맵 확장 (한반도)", "있음 · 따로 작동", "ok" } : new[] { "맵 확장 (한반도)", "없음", "mute" });
+  Updates.MapExpand = mapx;
   if (File.Exists(Path.Combine(game, "San14_2D\\.installed.json")) || File.Exists(Path.Combine(game, "d3d11_chain.dll")))
    s.Coexist.Add(new[] { "2D 부대 그림", File.Exists(Path.Combine(game, "d3d11_chain.dll")) ? "있음 · 계절 맵 아래에서 같이 돎" : "있음 · [설치]하면 계절 맵 아래로 옮겨 같이 돎", "ok" });
   else s.Coexist.Add(new[] { "2D 부대 그림", "없음", "mute" });
@@ -419,7 +420,7 @@ static class Checker {
 
 // ───────── 깃허브 판 목록·새 판 받기 (통합패치 R43.28 방식) ─────────
 sealed class Release {
- public string Tag = "", Title = "", Notes = "", Date = "", AssetName = "", AssetUrl = "", AssetSha = "";
+ public string Tag = "", Title = "", Notes = "", Date = "", AssetName = "", AssetUrl = "", AssetSha = "", Only = "";   // Only "mapexpand" = 맵 확장을 쓰는 PC 에만 필요한 판
  public long AssetSize; public int Major, Minor; public string Letter = "";
  public readonly List<Release> BaseParts = new List<Release>();
 }
@@ -468,7 +469,7 @@ static class Updates {
   var rl = ro as object[];
   if (rl != null) foreach (object o in rl) {
    var d = o as Dictionary<string, object>; if (d == null) continue;
-   var r = new Release(); r.Tag = Str(d, "tag"); r.Title = Str(d, "title"); r.Date = Str(d, "date"); r.Notes = Str(d, "notes").Replace("\r\n", "\n").Replace("\n", "\r\n");
+   var r = new Release(); r.Tag = Str(d, "tag"); r.Title = Str(d, "title"); r.Date = Str(d, "date"); r.Notes = Str(d, "notes").Replace("\r\n", "\n").Replace("\n", "\r\n"); r.Only = Str(d, "only");
    ParseTag(r.Tag, out r.Major, out r.Minor, out r.Letter); if (r.Major == 0) continue;
    string file = Str(d, "file"); if (!SafeFile(file)) continue;
    r.AssetName = Path.GetFileName(file); r.AssetUrl = Raw + file; r.AssetSha = Str(d, "sha256").ToLowerInvariant(); r.AssetSize = Num(d, "size");
@@ -479,7 +480,10 @@ static class Updates {
   return list;
  }
  static bool SafeFile(string f) { return f.StartsWith("updates/") && !f.Contains("..") && !f.Contains("\\") && f.EndsWith(".zip", StringComparison.OrdinalIgnoreCase); }
- public static Release Latest(List<Release> all) { return all == null || all.Count == 0 ? null : all[0]; }
+ // 맵 확장용 판(only = mapexpand)은 맵 확장이 없는 PC 에서는 '새 판'으로 치지 않는다 (받을 필요 없음). 고르면 받을 수는 있음
+ public static bool MapExpand;
+ public static bool Skip(Release r) { return r != null && r.Only == "mapexpand" && !MapExpand; }
+ public static Release Latest(List<Release> all) { if (all == null) return null; foreach (var r in all) if (!Skip(r)) return r; return null; }
  static Dictionary<string, string> ReadSums(Stream s) {
   var d = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
   using (var r = new StreamReader(s, Encoding.UTF8)) {
@@ -908,8 +912,8 @@ sealed class MainForm : Form {
   using (var f = Theme.Serif(13f)) TextRenderer.DrawText(g, r.Tag, f, new Point(b.X + 16, b.Y + 8), Theme.Ink, TextFormatFlags.NoPadding);
   string sub = r.Date + (r.Title != "" ? " · " + ShortTitle(r.Title) : "");
   using (var f = Theme.Ui(9f)) TextRenderer.DrawText(g, sub, f, new Rectangle(b.X + 16, b.Y + 36, b.Width - 24, 20), Theme.Mute, TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
-  string mark = r.Tag == Pkg.Version ? "지금 판" : Updates.Compare(r.Tag, Pkg.Version) > 0 ? "새 판" : "";
-  if (mark != "") using (var f = Theme.UiB(9f)) { var sz = TextRenderer.MeasureText(g, mark, f); TextRenderer.DrawText(g, mark, f, new Point(b.Right - sz.Width - 12, b.Y + 10), mark == "새 판" ? Theme.Accent2 : Theme.Ok, TextFormatFlags.NoPadding); }
+  string mark = r.Tag == Pkg.Version ? "지금 판" : Updates.Compare(r.Tag, Pkg.Version) > 0 ? (Updates.Skip(r) ? "맵 확장용 · 안 받아도 됨" : "새 판") : (Updates.Skip(r) ? "맵 확장용" : "");
+  if (mark != "") using (var f = Theme.UiB(9f)) { var sz = TextRenderer.MeasureText(g, mark, f); TextRenderer.DrawText(g, mark, f, new Point(b.Right - sz.Width - 12, b.Y + 10), mark == "새 판" ? Theme.Accent2 : mark == "지금 판" ? Theme.Ok : Theme.Mute, TextFormatFlags.NoPadding); }
  }
  static string ShortTitle(string t) { int i = t.IndexOf('—'); return i >= 0 ? t.Substring(i + 1).Trim() : t; }
 
@@ -966,13 +970,15 @@ sealed class MainForm : Form {
   else if (latest == null) add("아직 없음", Theme.Mute, false);
   else if (newer) add(latest.Tag + " ● 업데이트 가능", Theme.Accent2, true);
   else add(latest.Tag + (latest.Tag == Pkg.Version ? " (지금 판이 최신)" : ""), Theme.Ok, latest.Tag == Pkg.Version);
+  if (releases != null) { Release me = null; foreach (var x in releases) if (Updates.Skip(x) && Updates.Compare(x.Tag, Pkg.Version) > 0) { me = x; break; }
+   if (me != null) add("  (맵 확장용 " + me.Tag + " 은 맵 확장을 안 쓰면 안 받아도 됨)", Theme.Mute, false); }
   add("      게임: ", Theme.Ink, false);
   add(gameOn ? "켜져 있음 (설치·제거 전에 끄세요)" : "꺼져 있음", gameOn ? Theme.Warn : Theme.Ok, true);
   status.Set(segs.ToArray());
   updateBtn.Text = newer ? "업데이트  ● 새 판 " + latest.Tag : "업데이트";
   Theme.SetKind(updateBtn, newer ? 2 : 0);
   tabs.Marks[0] = snap == null || checking ? "" : snap.Parts.Count(p => p.Kind == 1) + "/3";
-  tabs.Marks[1] = newer ? "●" : ""; tabs.Invalidate();
+  tabs.Marks[1] = newer ? "●" : ""; tabs.Invalidate(); relList.Invalidate();
   bool idle = !busy;
   installBtn.Enabled = idle && GameDir.Valid(game); removeBtn.Enabled = idle && GameDir.Valid(game); updateBtn.Enabled = idle; rollbackBtn.Enabled = idle; browseBtn.Enabled = idle; refreshBtn.Enabled = idle && !checking; relGoBtn.Enabled = idle && relList.SelectedItem != null && ((Release)relList.SelectedItem).Tag != Pkg.Version;
  }
@@ -1015,8 +1021,10 @@ sealed class MainForm : Form {
   relMeta.Text = r.Date + "   ·   " + (r.AssetSize > 0 ? "받을 크기 " + (r.AssetSize / 1048576.0).ToString("0.0") + "MB (바뀐 파일만)" : "") + "   ·   받은 파일은 지문으로 하나하나 확인";
   relNotes.Text = r.Notes;
   int c = Updates.Compare(r.Tag, Pkg.Version);
-  relGoBtn.Text = c > 0 ? "이 판으로 업데이트" : c < 0 ? "이 판으로 되돌리기" : "지금 쓰는 판";
-  Theme.SetKind(relGoBtn, c > 0 ? 2 : c < 0 ? 1 : 0);
+  bool skip = Updates.Skip(r);
+  if (skip) relMeta.Text += "   ·   맵 확장용 판 — 이 PC 에는 맵 확장이 없어 안 받아도 됩니다";
+  relGoBtn.Text = c > 0 ? (skip ? "이 판으로 업데이트 (맵 확장용)" : "이 판으로 업데이트") : c < 0 ? "이 판으로 되돌리기" : "지금 쓰는 판";
+  Theme.SetKind(relGoBtn, c > 0 ? (skip ? 0 : 2) : c < 0 ? 1 : 0);
   ShowStatus();
  }
 
