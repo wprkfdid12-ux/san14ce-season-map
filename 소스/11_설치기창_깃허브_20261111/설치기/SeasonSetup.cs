@@ -295,22 +295,39 @@ static class Checker {
  }
  // 산세: tools\Terrain26.ps1 의 대상 목록(파일·위치·길이·순정/새 지문)으로 게임 0002 폴더 자료를 확인
  static void CheckTerrain(string game, Part p) {
-  var b = new StringBuilder(); int nNew = 0, nOrig = 0, nOther = 0, n = 0;
+  var b = new StringBuilder(); int nNew = 0, nOrig = 0, nOther = 0, n = 0; bool grown = false;
   try {
    string ps = File.ReadAllText(Path.Combine(Pkg.Root, "tools\\Terrain26.ps1"), Encoding.UTF8);
    var rx = new Regex(@"Name='([^']+)';File='([^']+)';FileLen=\[long\](\d+);Offset=\[long\](\d+);Len=\[int\](\d+);Orig='([0-9a-f]{64})';New='([0-9a-f]{64})'");
    foreach (Match m in rx.Matches(ps)) {
     string orig = m.Groups[6].Value, nw = m.Groups[7].Value; if (orig == nw) continue;
     n++; string path = Path.Combine(game, "0002\\" + m.Groups[2].Value); string h = "";
-    try { if (File.Exists(path) && new FileInfo(path).Length == Int64.Parse(m.Groups[3].Value)) h = Sha.HashPart(path, Int64.Parse(m.Groups[4].Value), Int32.Parse(m.Groups[5].Value)); } catch (Exception) { }
-    if (h == nw) nNew++; else if (h == orig) nOrig++; else { nOther++; b.AppendLine("  " + m.Groups[2].Value + " [" + m.Groups[1].Value + "] — " + (h == "" ? "없음·크기 다름" : "순정도 새 산도 아님")); }
+    long flen = Int64.Parse(m.Groups[3].Value), off = Int64.Parse(m.Groups[4].Value); int len = Int32.Parse(m.Groups[5].Value);
+    // v26k47: the file may be longer than the game's own (another mod appended data after it) - only our own bytes are checked here
+    try { if (File.Exists(path)) { long L = new FileInfo(path).Length; if (L >= off + len) h = Sha.HashPart(path, off, len); string nm = m.Groups[1].Value; if (L > flen && (nm.StartsWith("mhk_") || nm.StartsWith("tex_"))) grown = true; } } catch (Exception) { }
+    if (h == nw) nNew++; else if (h == orig) nOrig++; else { nOther++; b.AppendLine("  " + m.Groups[2].Value + " [" + m.Groups[1].Value + "] — " + (h == "" ? "없음" : "순정도 새 산도 아님")); }
    }
   } catch (Exception e) { b.AppendLine("확인 실패: " + e.Message); }
-  p.Total = n; p.Ok = nNew;
+  // v26k47: the bigger map another mod (map expand) appended and pointed the game at - the season mountains are put into it too
+  int meAll = 0, meOk = 0; var mb = new StringBuilder();
+  string mk = Path.Combine(game, "_SAN14_SeasonMap_terrain_me.txt");
+  try {
+   if (File.Exists(mk)) foreach (string ln in File.ReadAllLines(mk, Encoding.UTF8)) {
+    string[] q = ln.Trim('\uFEFF', ' ').Split('|'); if (q.Length < 6) continue; meAll++;
+    string path = Path.Combine(game, "0002\\" + q[0]); long o = Int64.Parse(q[1]); int len = Int32.Parse(q[2]); string h = "";
+    try { if (File.Exists(path) && new FileInfo(path).Length >= o + len) h = Sha.HashPart(path, o, len); } catch (Exception) { }
+    if (h == q[4]) { meOk++; mb.AppendLine("  " + (q[5].StartsWith("mhk_") ? "높이(판정용)" : "높이(화면용)") + " — 들어 있음"); }
+    else mb.AppendLine("  " + (q[5].StartsWith("mhk_") ? "높이(판정용)" : "높이(화면용)") + " — 맵 확장이 다시 깔아서 빠짐");
+   }
+  } catch (Exception e) { mb.AppendLine("  확인 실패: " + e.Message); }
+  bool meNeed = grown && (meAll == 0 || meOk < meAll);
+  p.Total = n + (grown ? Math.Max(meAll, 1) : 0); p.Ok = nNew + (grown ? meOk : 0);
   string head = "게임 지형 자료 " + n + "곳 중 새 산 " + nNew + " · 순정 " + nOrig + (nOther > 0 ? " · 그 밖 " + nOther : "") + "\r\n(산세는 게임 자료에 직접 들어가서 게임 안 실행 기록은 따로 없습니다)";
-  p.Detail = head + (b.Length > 0 ? "\r\n\r\n다른 것:\r\n" + b.ToString() : "");
-  SetKind(p, n == 0 ? 0 : nNew == n ? 1 : nNew == 0 && nOther == 0 ? 0 : 2);
-  p.Applied = p.Kind == 1 ? "자료에 들어 있음" : "—"; p.AppliedColor = p.Kind == 1 ? Theme.Ok : Theme.Mute;
+  if (grown) head += "\r\n\r\n맵 확장(큰 지도)이 지형 자료를 새로 붙여 씀 — 그 안의 중원 땅에도 산세를 넣습니다 (맵 확장이 바꾼 칸은 그대로):\r\n" + (meAll > 0 ? mb.ToString() : "  아직 안 넣음 — [설치 / 다시 맞추기]를 누르세요\r\n");
+  p.Detail = head + (b.Length > 0 ? "\r\n다른 것:\r\n" + b.ToString() : "");
+  SetKind(p, n == 0 ? 0 : (nNew == n && !meNeed) ? 1 : nNew == 0 && nOther == 0 && !grown ? 0 : 2);
+  if (p.Kind == 2 && meNeed && nNew == n) p.StatusSub = "맵 확장 쪽 다시 맞추기";
+  p.Applied = p.Kind == 1 ? (grown ? "자료에 들어 있음 (맵 확장 포함)" : "자료에 들어 있음") : "—"; p.AppliedColor = p.Kind == 1 ? Theme.Ok : Theme.Mute;
  }
  public static string Tail(string path, int max) {
   using (var f = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) {
