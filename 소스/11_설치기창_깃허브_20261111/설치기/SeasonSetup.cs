@@ -528,53 +528,65 @@ static class Updates {
   string h = Sha.HashFile(tmp); if (h != sha) { File.Delete(tmp); throw new IOException("압축 안 파일 지문이 목록과 다릅니다: " + e.FullName); }
   if (File.Exists(dest)) File.Delete(dest); File.Move(tmp, dest);
  }
- // 새 판 폴더 만들기: 지금 설치기 폴더 옆 '계절 맵 <판>'. 지금 폴더·게임 폴더는 건드리지 않는다.
+ // v26k50: 새 판(또는 옛 판)을 이 설치기 폴더에 바로 덮어쓴다 (새 폴더를 만들지 않음 — 사용자 요청 2026-11-12).
+ //  1) 받은 판 파일·필요한 기본판 조각에서 바뀐 파일만 폴더 안 '_업데이트_받는중'에 먼저 풀고 지문 확인
+ //  2) 다 맞으면 그때 한꺼번에 덮어씀, 새 판에서 빠진 우리 파일(옛 SHA256SUMS.txt 에만 있는 것)은 지움
+ //  3) 끝에 폴더 전체를 새 목록과 대조. 게임 폴더는 건드리지 않음(새 설치기에서 [지금 적용])
  public static string Build(Release r, string package, Action<string> say) {
   string pkg = Path.GetFullPath(package).TrimEnd(Path.DirectorySeparatorChar);
-  string parent = Path.GetDirectoryName(pkg); if (String.IsNullOrEmpty(parent)) throw new IOException("지금 설치기 폴더의 위 폴더를 알 수 없습니다: " + pkg);
-  string dest = Path.Combine(parent, "계절 맵 " + r.Tag);
-  if (String.Equals(dest, pkg, StringComparison.OrdinalIgnoreCase)) throw new IOException("지금 쓰는 설치기가 이미 그 판 폴더입니다: " + dest);
-  string work = dest + " (받는 중)";
-  try { if (Directory.Exists(work)) Directory.Delete(work, true); Directory.CreateDirectory(work); }
-  catch (Exception e) { throw new IOException("새 판 폴더를 만들 수 없습니다(쓰기 권한·백신 확인): " + work + "\r\n" + e.Message, e); }
-  say("새 판 폴더: " + dest);
-  string zip = Path.Combine(work, "_" + r.AssetName);
-  Download(r.AssetUrl, zip, r.AssetSize, r.Tag + " 파일", say); Expect(zip, r.AssetSha, r.Tag + " 파일");
-  var missing = new List<string>(); Dictionary<string, string> sums; int fromZip = 0, fromHere = 0;
-  using (var z = ZipFile.OpenRead(zip)) {
-   var se = z.GetEntry("SHA256SUMS.txt"); if (se == null) throw new IOException(r.AssetName + " 안에 SHA256SUMS.txt 가 없습니다(올린 파일이 잘못됨).");
-   using (var s = se.Open()) sums = ReadSums(s);
-   say("파일 " + sums.Count + "개 확인 중 (바뀐 파일은 받은 것에서, 나머지는 지금 폴더에서 복사)");
-   foreach (var kv in sums) {
-    string dst = Native(work, kv.Key); var e = z.GetEntry(kv.Key);
-    if (e != null) { Extract(e, dst, kv.Value); fromZip++; continue; }
-    string src = Native(pkg, kv.Key);
-    if (File.Exists(src) && Sha.HashFile(src) == kv.Value) { Directory.CreateDirectory(Path.GetDirectoryName(dst)); File.Copy(src, dst, true); fromHere++; }
-    else missing.Add(kv.Key);
+  string work = Path.Combine(pkg, "_업데이트_받는중"), stage = Path.Combine(work, "새 파일");
+  try { if (Directory.Exists(work)) Directory.Delete(work, true); Directory.CreateDirectory(stage); }
+  catch (Exception e) { throw new IOException("받을 자리를 만들 수 없습니다(쓰기 권한·백신 확인): " + work + "\r\n" + e.Message, e); }
+  say("이 폴더에 바로 덮어씁니다: " + pkg);
+  try {
+   string zip = Path.Combine(work, "_" + r.AssetName);
+   Download(r.AssetUrl, zip, r.AssetSize, r.Tag + " 파일", say); Expect(zip, r.AssetSha, r.Tag + " 파일");
+   var missing = new List<string>(); var staged = new List<string>(); Dictionary<string, string> sums; int same = 0;
+   using (var z = ZipFile.OpenRead(zip)) {
+    var se = z.GetEntry("SHA256SUMS.txt"); if (se == null) throw new IOException(r.AssetName + " 안에 SHA256SUMS.txt 가 없습니다(올린 파일이 잘못됨).");
+    using (var s = se.Open()) sums = ReadSums(s);
+    say("파일 " + sums.Count + "개 확인 중 (같은 파일은 그대로, 바뀐 파일만 바꿈)");
+    foreach (var kv in sums) {
+     string cur = Native(pkg, kv.Key);
+     if (File.Exists(cur) && Sha.HashFile(cur) == kv.Value) { same++; continue; }
+     var e = z.GetEntry(kv.Key);
+     if (e != null) { Extract(e, Native(stage, kv.Key), kv.Value); staged.Add(kv.Key); continue; }
+     missing.Add(kv.Key);
+    }
    }
-  }
-  File.Delete(zip);
-  if (missing.Count > 0) {
-   if (r.BaseParts.Count == 0) throw new IOException("지금 폴더에 없는 기본 파일이 " + missing.Count + "개 있는데(예: " + missing[0] + "), 깃허브에 기본판 파일이 없습니다.");
-   say("지금 폴더에 없는 기본 파일 " + missing.Count + "개 → 기본판 조각을 받습니다");
-   var still = new List<string>(missing);
-   foreach (var part in r.BaseParts) {
-    if (still.Count == 0) break;
-    string bz = Path.Combine(work, "_" + part.AssetName); Download(part.AssetUrl, bz, part.AssetSize, "기본판 " + part.AssetName, say); Expect(bz, part.AssetSha, "기본판 " + part.AssetName);
-    using (var z = ZipFile.OpenRead(bz)) foreach (string rel in still.ToArray()) { var e = z.GetEntry(rel); if (e == null) continue; Extract(e, Native(work, rel), sums[rel]); still.Remove(rel); }
-    File.Delete(bz);
+   File.Delete(zip);
+   if (missing.Count > 0) {
+    if (r.BaseParts.Count == 0) throw new IOException("이 폴더에 없는 기본 파일이 " + missing.Count + "개 있는데(예: " + missing[0] + "), 깃허브에 기본판 파일이 없습니다.");
+    say("이 폴더에 없는 기본 파일 " + missing.Count + "개 → 기본판 조각을 받습니다");
+    var still = new List<string>(missing);
+    foreach (var part in r.BaseParts) {
+     if (still.Count == 0) break;
+     string bz = Path.Combine(work, "_" + part.AssetName); Download(part.AssetUrl, bz, part.AssetSize, "기본판 " + part.AssetName, say); Expect(bz, part.AssetSha, "기본판 " + part.AssetName);
+     using (var z = ZipFile.OpenRead(bz)) foreach (string rel in still.ToArray()) { var e = z.GetEntry(rel); if (e == null) continue; Extract(e, Native(stage, rel), sums[rel]); staged.Add(rel); still.Remove(rel); }
+     File.Delete(bz);
+    }
+    if (still.Count > 0) throw new IOException("기본판에도 없는 파일이 " + still.Count + "개 있습니다: " + String.Join(", ", still.Take(5).ToArray()));
    }
-   if (still.Count > 0) throw new IOException("기본판에도 없는 파일이 " + still.Count + "개 있습니다: " + String.Join(", ", still.Take(5).ToArray()));
+   foreach (string rel in staged) if (Sha.HashFile(Native(stage, rel)) != sums[rel]) throw new IOException("받은 파일 확인 실패: " + rel);
+   // 여기까지는 이 폴더를 하나도 바꾸지 않음. 이제 덮어씀
+   Dictionary<string, string> old = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+   string sumPath = Path.Combine(pkg, "SHA256SUMS.txt");
+   try { if (File.Exists(sumPath)) using (var fs = File.OpenRead(sumPath)) old = ReadSums(fs); } catch (Exception) { }
+   foreach (string rel in staged) { string dst = Native(pkg, rel); Directory.CreateDirectory(Path.GetDirectoryName(dst)); File.Copy(Native(stage, rel), dst, true); }
+   int gone = 0;
+   foreach (string rel in old.Keys) {
+    if (sums.ContainsKey(rel)) continue;
+    string f = Native(pkg, rel); try { if (File.Exists(f)) { File.Delete(f); gone++; } } catch (Exception) { }
+   }
+   using (var w = new StreamWriter(sumPath, false, new UTF8Encoding(false)))
+    foreach (var kv in sums.OrderBy(x => x.Key, StringComparer.Ordinal)) w.Write(kv.Value + "  " + kv.Key + "\n");
+   foreach (var kv in sums) if (Sha.HashFile(Native(pkg, kv.Key)) != kv.Value) throw new IOException("덮어쓴 뒤 확인 실패: " + kv.Key);
+   say("덮어쓰기 완료: 바꾼 파일 " + staged.Count + "개 · 그대로 " + same + "개" + (missing.Count > 0 ? " · 기본판에서 " + missing.Count + "개" : "") + (gone > 0 ? " · 빠진 파일 " + gone + "개 지움" : ""));
   }
-  using (var w = new StreamWriter(Path.Combine(work, "SHA256SUMS.txt"), false, new UTF8Encoding(false)))
-   foreach (var kv in sums.OrderBy(x => x.Key, StringComparer.Ordinal)) w.Write(kv.Value + "  " + kv.Key + "\n");
-  foreach (var kv in sums) if (Sha.HashFile(Native(work, kv.Key)) != kv.Value) throw new IOException("새 판 폴더 확인 실패: " + kv.Key);
-  if (Directory.Exists(dest)) { string keep = dest + " (옛 " + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ")"; Directory.Move(dest, keep); say("같은 이름 폴더가 있어 옆으로 옮김: " + keep); }
-  Directory.Move(work, dest);
-  say("새 판 폴더 완성: 받은 파일 " + fromZip + "개 · 지금 폴더에서 복사 " + fromHere + "개" + (missing.Count > 0 ? " · 기본판에서 " + missing.Count + "개" : ""));
-  return dest;
+  finally { try { if (Directory.Exists(work)) Directory.Delete(work, true); } catch (Exception) { } }
+  return pkg;
  }
- // 새 판 설치기 열기(그 폴더의 Build.ps1 이 컴파일해서 실행). 지금 설치기는 닫는다.
+ // 새 판 설치기 열기(이 폴더의 Build.ps1 이 다시 컴파일해서 실행 — 지금 설치기가 닫히기를 기다렸다가). 지금 설치기는 닫는다.
  public static void Launch(string dest, string game, string fromVersion) {
   string ps = Path.Combine(dest, "support\\installer\\Build.ps1");
   if (!File.Exists(ps)) throw new IOException("새 판 폴더에 설치기 자료가 없습니다: " + ps);
@@ -943,7 +955,7 @@ sealed class MainForm : Form {
   th.IsBackground = true; th.Start();
   if (Program.AfterUpdate != "") {
    if (!GameDir.Valid(game)) { MessageBox.Show(this, "새 판(" + Pkg.Version + ") 설치기입니다. 게임 폴더를 찾지 못했으니 [게임 폴더 변경…]으로 고른 뒤 [설치]를 눌러 주세요.", "새 판"); return; }
-   int k = ErrorBox.Ask(this, "새 판 " + Pkg.Version, "새 판(" + Pkg.Version + ") 폴더를 만들었습니다. (이전 설치기: " + Program.AfterUpdate + ")\r\n\r\n지금 게임에 적용할까요? 게임은 꺼져 있어야 합니다.\r\n앞으로는 이 새 폴더의 설치.cmd 를 쓰세요.", new[] { "지금 적용", "나중에" });
+   int k = ErrorBox.Ask(this, "새 판 " + Pkg.Version, "이 폴더를 " + Pkg.Version + " 으로 바꿨습니다. (이전: " + Program.AfterUpdate + ")\r\n\r\n지금 게임에 적용할까요? 게임은 꺼져 있어야 합니다.", new[] { "지금 적용", "나중에" });
    if (k == 0) DoInstall(false);
   }
  }
@@ -1121,7 +1133,7 @@ sealed class MainForm : Form {
   int c = Updates.Compare(r.Tag, Pkg.Version);
   if (pick == null && c <= 0) { MessageBox.Show(this, "지금 설치기(" + Pkg.Version + ")가 공개 최신판입니다.", "업데이트"); return; }
   if (c == 0) return;
-  string head = (c > 0 ? "새 판 " : "옛 판 ") + r.Tag + " 을(를) 받아 이 설치기 폴더 옆에 '계절 맵 " + r.Tag + "' 폴더를 만들고, 그 판 설치기를 엽니다.\r\n지금 폴더·게임 폴더는 바로 바뀌지 않습니다(새 설치기에서 적용).";
+  string head = (c > 0 ? "새 판 " : "옛 판 ") + r.Tag + " 을(를) 받아 이 설치기 폴더에 바로 덮어쓰고(새 폴더를 만들지 않음), 설치기를 다시 엽니다.\r\n게임 폴더는 바로 바뀌지 않습니다(다시 열린 설치기에서 [지금 적용]).";
   if (ErrorBox.Ask(this, c > 0 ? "업데이트" : "버전 되돌리기", head + "\r\n\r\n" + (r.Title != "" ? r.Title : r.Tag), new[] { c > 0 ? "받기" : "되돌리기", "취소" }) != 0) return;
   busy = true; liveShown = true; logBox.Clear(); live.Clear(); tabs.Select(2); ShowStatus();
   string g = game; string from = Pkg.Version;
@@ -1131,9 +1143,9 @@ sealed class MainForm : Form {
    try {
     BeginInvoke(new Action(delegate {
      busy = false; ShowStatus();
-     if (err != null) { Say("실패: " + err.Message); ErrorBox.Show(this, "새 판 받기", ErrorBox.Describe("새 판(" + r.Tag + ") 폴더를 만드는 중", null, err, null)); return; }
-     try { Updates.Launch(dest, g, from); Say("새 판 설치기를 엽니다: " + dest); Close(); }
-     catch (Exception e) { ErrorBox.Show(this, "새 판 받기", ErrorBox.Describe("새 판 설치기를 여는 중", dest, e, "새 폴더의 설치.cmd 를 직접 실행해 주세요.")); }
+     if (err != null) { Say("실패: " + err.Message); ErrorBox.Show(this, "새 판 받기", ErrorBox.Describe("새 판(" + r.Tag + ")을 이 폴더에 받는 중", null, err, "이 폴더는 받기 전 그대로입니다(덮어쓰기 전에 멈춤). 인터넷을 확인하고 다시 눌러 주세요.")); return; }
+     try { Updates.Launch(dest, g, from); Say("설치기를 다시 엽니다"); Close(); }
+     catch (Exception e) { ErrorBox.Show(this, "새 판 받기", ErrorBox.Describe("설치기를 다시 여는 중", dest, e, "이 폴더의 설치.cmd 를 직접 실행해 주세요.")); }
     }));
    } catch (Exception) { }
   });

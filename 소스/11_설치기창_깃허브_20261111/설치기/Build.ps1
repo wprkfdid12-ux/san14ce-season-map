@@ -13,8 +13,12 @@ try {
     if ($null -eq $csc) { throw '.NET Framework C# 컴파일러(csc.exe)를 찾을 수 없습니다. Windows 기능 켜기/끄기에서 .NET Framework 4.8 을 켜 주세요.' }
     $out = Join-Path $here 'SeasonSetup.exe'
     if (Test-Path -LiteralPath $out) {
-        try { Remove-Item -LiteralPath $out -Force }
-        catch { throw ('계절 맵 설치기가 이미 켜져 있습니다. 켜져 있는 설치기 창을 닫고 설치.cmd 를 다시 실행해 주세요. (원인: ' + $_.Exception.Message + ')') }
+        # v26k50: right after an update in the same folder the old installer is still closing - wait for it (up to 30 s)
+        $tries = 1; if (-not [string]::IsNullOrEmpty($AfterUpdate)) { $tries = 60 }
+        for ($i = 1; $i -le $tries; $i++) {
+            try { Remove-Item -LiteralPath $out -Force; break }
+            catch { if ($i -ge $tries) { throw ('계절 맵 설치기가 이미 켜져 있습니다. 켜져 있는 설치기 창을 닫고 설치.cmd 를 다시 실행해 주세요. (원인: ' + $_.Exception.Message + ')') }; Start-Sleep -Milliseconds 500 }
+        }
     }
     $cargs = @('/nologo','/codepage:65001','/optimize+','/target:winexe','/platform:anycpu',
         '/reference:System.dll','/reference:System.Core.dll','/reference:System.Drawing.dll','/reference:System.Windows.Forms.dll',

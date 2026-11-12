@@ -1,4 +1,4 @@
-﻿# 계절 맵 처음 설치(깃허브에서 받은 분용): updates 폴더의 기본판 조각 + 최신판 파일을 풀어 '계절 맵 <판>' 폴더를 만들고 설치기를 연다.
+﻿# 계절 맵 처음 설치(깃허브에서 받은 분용): updates 폴더의 기본판 조각 + 최신판 파일을 풀어 '계절 맵' 폴더를 만들고 설치기를 연다(업데이트는 그 폴더에 덮어씀).
 # 모든 파일은 SHA-256 으로 확인한다. 게임 폴더는 여기서 건드리지 않는다(설치는 설치기에서).
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
@@ -16,7 +16,7 @@ try {
         if ($h -ne $sha) { throw ('파일이 손상됐습니다(지문 다름): ' + $p + "`r`n저장소 ZIP 을 다시 받아 주세요.") }
         return $p
     }
-    $dest = Join-Path $root ('계절 맵 ' + $rel.tag)
+    $dest = Join-Path $root '계절 맵'   # v26k50: 판 번호 없는 폴더 하나 - 업데이트는 이 폴더에 바로 덮어씀
     if (Test-Path -LiteralPath $dest) { $dest = $dest + ' (' + (Get-Date -Format 'yyyyMMdd_HHmmss') + ')' }
     New-Item -ItemType Directory -Path $dest | Out-Null
     Write-Host ('계절 맵 ' + $rel.tag + ' 폴더를 만듭니다: ' + $dest)
