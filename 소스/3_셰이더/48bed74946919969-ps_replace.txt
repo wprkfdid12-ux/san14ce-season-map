@@ -737,12 +737,14 @@ void main(float4 v0 : SV_Position,
             r1.x = (r1.x) & (r3.x);
             r6.xyzw = ((r1.xxxx) != 0) ? (r6.xyzw) : (r12.xyzw);
             r6.xyzw = ((r13.zzzz) != 0) ? (r11.xyzw) : (r6.xyzw);
-            // ---- SAN14: no black bands on steep walls (border strokes); v26k45: none at all on land nobody owns; half faction colour on the swamp ----
+            // ---- SAN14: v26k46: no black paint at all (border strokes, the band and the fill alike, any slope) -> the land shows instead;
+            //      only true black is dropped (darker than 8% and colourless), so dark faction colours (Lu Bu / Dong Zhuo grey, Liu Zhang purple) stay;
+            //      half faction colour on the swamp (v26k45) ----
             {
                 float sanMx = max(asfloat(r6.x), max(asfloat(r6.y), asfloat(r6.z)));
-                if (r13.z != 0) { if (asfloat(r5.y) < 0.6 && sanMx < 0.15) r6.w = 0u; }
-                else if (r1.x != 0) { if (sanMx < 0.15) r6.w = 0u; }
-                else if (asfloat(r6.w) > 0.0) { float sanSk = swampAt(sanWorld);
+                float sanMn = min(asfloat(r6.x), min(asfloat(r6.y), asfloat(r6.z)));
+                if (sanMx < 0.08 && sanMx - sanMn < 0.05) r6.w = 0u;
+                else if (r13.z == 0 && r1.x == 0 && asfloat(r6.w) > 0.0) { float sanSk = swampAt(sanWorld);
                     if (sanSk > 0.002) r6.w = asuint(asfloat(r6.w) * (1.0 - 0.5 * smoothstep(0.15, 0.75, sanSk))); }
             }
             r3.xyz = asuint((-asfloat(r0.xyz)) + (asfloat(r6.xyz)));
