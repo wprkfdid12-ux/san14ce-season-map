@@ -296,14 +296,14 @@ static class Checker {
  }
  // 산세: tools\Terrain26.ps1 의 대상 목록(파일·위치·길이·순정/새 지문)으로 게임 0002 폴더 자료를 확인
  static void CheckTerrain(string game, Part p) {
-  var b = new StringBuilder(); int nNew = 0, nOrig = 0, nOther = 0, n = 0; bool grown = false;
+  var b = new StringBuilder(); int nNew = 0, nOrig = 0, nOther = 0, n = 0; bool grown = false; var flenOf = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
   try {
    string ps = File.ReadAllText(Path.Combine(Pkg.Root, "tools\\Terrain26.ps1"), Encoding.UTF8);
    var rx = new Regex(@"Name='([^']+)';File='([^']+)';FileLen=\[long\](\d+);Offset=\[long\](\d+);Len=\[int\](\d+);Orig='([0-9a-f]{64})';New='([0-9a-f]{64})'");
    foreach (Match m in rx.Matches(ps)) {
     string orig = m.Groups[6].Value, nw = m.Groups[7].Value; if (orig == nw) continue;
     n++; string path = Path.Combine(game, "0002\\" + m.Groups[2].Value); string h = "";
-    long flen = Int64.Parse(m.Groups[3].Value), off = Int64.Parse(m.Groups[4].Value); int len = Int32.Parse(m.Groups[5].Value);
+    long flen = Int64.Parse(m.Groups[3].Value), off = Int64.Parse(m.Groups[4].Value); int len = Int32.Parse(m.Groups[5].Value); flenOf[m.Groups[2].Value] = flen;
     // v26k47: the file may be longer than the game's own (another mod appended data after it) - only our own bytes are checked here
     try { if (File.Exists(path)) { long L = new FileInfo(path).Length; if (L >= off + len) h = Sha.HashPart(path, off, len); string nm = m.Groups[1].Value; if (L > flen && (nm.StartsWith("mhk_") || nm.StartsWith("tex_"))) grown = true; } } catch (Exception) { }
     if (h == nw) nNew++; else if (h == orig) nOrig++; else { nOther++; b.AppendLine("  " + m.Groups[2].Value + " [" + m.Groups[1].Value + "] — " + (h == "" ? "없음" : "순정도 새 산도 아님")); }
@@ -314,13 +314,19 @@ static class Checker {
   string mk = Path.Combine(game, "_SAN14_SeasonMap_terrain_me.txt");
   try {
    if (File.Exists(mk)) foreach (string ln in File.ReadAllLines(mk, Encoding.UTF8)) {
-    string[] q = ln.Trim('\uFEFF', ' ').Split('|'); if (q.Length < 6) continue; meAll++;
+    string[] q = ln.Trim('\uFEFF', ' ').Split('|'); if (q.Length < 6) continue;
     string path = Path.Combine(game, "0002\\" + q[0]); long o = Int64.Parse(q[1]); int len = Int32.Parse(q[2]); string h = "";
+    string what = q[5].StartsWith("mhk_") ? "높이(판정용)" : "높이(화면용)";
+    // v26k52: only while the bigger map is there (the file longer than the game's own); the copy is found again in the game's index
+    //         by its asset id and size - map expand may have been taken off and put back since the record was written
+    long own; if (!flenOf.TryGetValue(q[0], out own)) own = 0;
+    if (own > 0) { long L = File.Exists(path) ? new FileInfo(path).Length : 0; if (L <= own) continue; }
+    meAll++;
+    if (q.Length >= 8 && q[7] != "") { long f2 = FindCopy(game, path, q[7], len, own); if (f2 < 0) { mb.AppendLine("  " + what + " — 맵 확장 자료가 바뀜 (다시 맞추기 필요)"); continue; } o = f2; }
     // v26k48: by content - a few cells of the copy (written down at install) are read back; the copy may be re-packed by the other mod
     //         (map expand puts the current heights in again when it is applied) and still hold the season mountains
     int pst = -1; if (q.Length >= 7) { try { pst = ProbeState(path, o, len, q[6]); } catch (Exception) { pst = -1; } }
     if (pst == -1) { try { if (File.Exists(path) && new FileInfo(path).Length >= o + len) h = Sha.HashPart(path, o, len); } catch (Exception) { } }
-    string what = q[5].StartsWith("mhk_") ? "높이(판정용)" : "높이(화면용)";
     if (pst == 1 || (pst == -1 && h == q[4])) { meOk++; mb.AppendLine("  " + what + " — 들어 있음"); }
     else if (pst == 2) mb.AppendLine("  " + what + " — 일부만 들어 있음");
     else mb.AppendLine("  " + what + " — 맵 확장이 다시 깔아서 빠짐");
@@ -334,6 +340,22 @@ static class Checker {
   SetKind(p, n == 0 ? 0 : (nNew == n && !meNeed) ? 1 : nNew == 0 && nOther == 0 && !grown ? 0 : 2);
   if (p.Kind == 2 && meNeed && nNew == n) p.StatusSub = "맵 확장 쪽 다시 맞추기";
   p.Applied = p.Kind == 1 ? (grown ? "자료에 들어 있음 (맵 확장 포함)" : "자료에 들어 있음") : "—"; p.AppliedColor = p.Kind == 1 ? Theme.Ok : Theme.Mute;
+ }
+ // v26k52: where the copy with this asset id ("XX-XX-..", header 0x24) and size is now: the game's index (0002\FieldEditor4.rdb) lists
+ // offset@size of every record; only places after the game's own data (minOff) count. -1 = not there
+ static long FindCopy(string game, string path, string aid, int len, long minOff) {
+  string idx = Path.Combine(game, "0002\\FieldEditor4.rdb"); if (!File.Exists(idx) || !File.Exists(path)) return -1;
+  string txt = Encoding.ASCII.GetString(File.ReadAllBytes(idx)); long flen = new FileInfo(path).Length; var hb = new byte[48];
+  using (var f = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) {
+   foreach (Match m in Regex.Matches(txt, "([0-9a-f]{1,9})@([0-9a-f]{1,8})")) {
+    long o = Convert.ToInt64(m.Groups[1].Value, 16), sz = Convert.ToInt64(m.Groups[2].Value, 16);
+    if (sz != len || o < minOff || o + len > flen) continue;
+    f.Position = o; if (f.Read(hb, 0, 48) != 48) continue;
+    if (hb[0] != 0x49 || hb[1] != 0x44 || hb[2] != 0x52 || hb[3] != 0x4b || BitConverter.ToUInt32(hb, 8) != (uint)len) continue;
+    if (BitConverter.ToString(hb, 36, 8) == aid) return o;
+   }
+  }
+  return -1;
  }
  // v26k48: probe cells "P<piece size>:<raw offset>=<season hex>/<original hex>,..." of an IDRK copy at (path, o, len): only the pieces
  // holding them are inflated. 1 = all season, 0 = all original, 2 = mixed / other, -1 = cannot tell

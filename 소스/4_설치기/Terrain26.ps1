@@ -262,7 +262,7 @@ try{
      if($o -lt $t.FileLen -or ($o+$n) -gt $flen -or $n -lt 64){continue}
      $key=$t.File+'|'+$o;if($seen.ContainsKey($key)){continue}
      $h=[MS4]::Read($path,$o,48);if([SeasonME]::AssetId($h) -ne $aid){continue};if([BitConverter]::ToUInt32($h,8) -ne $n){continue}
-     $seen[$key]=1;[void]$script:MEC.Add(@($t,$path,$o,$n,$kind,$origC,$newC))
+     $seen[$key]=1;[void]$script:MEC.Add(@($t,$path,$o,$n,$kind,$origC,$newC,$aid))
     }
    }
  }
@@ -366,13 +366,15 @@ try{
       if(-not(Test-Path -LiteralPath $bkf)){[IO.File]::WriteAllBytes($bkf,$cur)};if([MS4]::Sha([IO.File]::ReadAllBytes($bkf)) -ne $curSha){throw '큰 지도 자리 백업 저장 실패'}
       [MS4]::Write($path,$o,$out);$back=[MS4]::Read($path,$o,[int]$n);$nsha=[MS4]::Sha($back)
       if($nsha -ne [MS4]::Sha($out)){[MS4]::Write($path,$o,$cur);throw '큰 지도 자리 쓰기 확인 실패 - 원래대로 되돌림'}
-      $marks += ($t.File+'|'+$o+'|'+$n+'|'+$curSha+'|'+$nsha+'|'+$t.Name+'|'+$pr);Log ($t.File+' ['+$t.Name+']: 큰 지도 쪽 산세 적용 완료')
+      $marks += ($t.File+'|'+$o+'|'+$n+'|'+$curSha+'|'+$nsha+'|'+$t.Name+'|'+$pr+'|'+$c[7]);Log ($t.File+' ['+$t.Name+']: 큰 지도 쪽 산세 적용 완료')
     }elseif([SeasonME]::LastApplied -eq 0 -and [SeasonME]::LastAlready -gt 0){
       $osha='';if(Test-Path -LiteralPath $bkf){$osha=[MS4]::Sha([IO.File]::ReadAllBytes($bkf))}
-      $marks += ($t.File+'|'+$o+'|'+$n+'|'+$osha+'|'+$curSha+'|'+$t.Name+'|'+$pr);Log ($t.File+' ['+$t.Name+']: 큰 지도 쪽은 이미 산세가 들어 있음')
+      $marks += ($t.File+'|'+$o+'|'+$n+'|'+$osha+'|'+$curSha+'|'+$t.Name+'|'+$pr+'|'+$c[7]);Log ($t.File+' ['+$t.Name+']: 큰 지도 쪽은 이미 산세가 들어 있음')
     }
   }
-  if($marks.Count -gt 0){Set-Content -LiteralPath $meMark -Encoding UTF8 -Value $marks}elseif(Test-Path -LiteralPath $meMark){Remove-Item -LiteralPath $meMark -Force}
+  # v26k52: the record is kept when the bigger map is not there right now (map expand taken off for a while) - it is only about that
+  #         copy (found again by asset id and size), the installer skips it while the file is its own size; removed on uninstall
+  if($marks.Count -gt 0){Set-Content -LiteralPath $meMark -Encoding UTF8 -Value $marks}elseif($script:MEC.Count -gt 0 -and (Test-Path -LiteralPath $meMark)){Remove-Item -LiteralPath $meMark -Force}
  }catch{Log ('큰 지도(다른 모드) 쪽 산세 넣기는 건너뜀: '+$_.Exception.Message)}
 }catch{
  Log ('실패: '+$_.Exception.Message)
