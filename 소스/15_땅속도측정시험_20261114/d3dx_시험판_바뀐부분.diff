@@ -1,0 +1,50 @@
+1528a1529,1543
+> ; v26k53 TEST BUILD (ground speed test, a few minutes after a save is loaded): x98 picks how this ground piece is drawn -
+> ;      0 the release ground shader (this file's replacement, with the reuse store), 1 the same picture without the reuse store,
+> ;      2 the game's own ground, 3 way 1 without the disasters / weather marks / northwest winter. Outside the test x98 = 0.
+> if x98 == 1
+> 	run = CustomShaderSAN14TestNearA
+> 	handling = skip
+> endif
+> if x98 == 2
+> 	run = CustomShaderSAN14GameNear
+> 	handling = skip
+> endif
+> if x98 == 3
+> 	run = CustomShaderSAN14TestNearB
+> 	handling = skip
+> endif
+1541a1557,1571
+> ; v26k53 TEST BUILD (ground speed test, a few minutes after a save is loaded): x98 picks how this ground piece is drawn -
+> ;      0 the release ground shader (this file's replacement, with the reuse store), 1 the same picture without the reuse store,
+> ;      2 the game's own ground, 3 way 1 without the disasters / weather marks / northwest winter. Outside the test x98 = 0.
+> if x98 == 1
+> 	run = CustomShaderSAN14TestFarA
+> 	handling = skip
+> endif
+> if x98 == 2
+> 	run = CustomShaderSAN14GameFar
+> 	handling = skip
+> endif
+> if x98 == 3
+> 	run = CustomShaderSAN14TestFarB
+> 	handling = skip
+> endif
+1603a1634,1650
+> 
+> ; v26k53 TEST BUILD: the ground variants of the speed test (ShaderFixes\SeasonTest*.hlsl), drawn in place of the game's ground piece
+> [CustomShaderSAN14TestNearA]
+> ps = ShaderFixes\SeasonTestNearA.hlsl
+> draw = from_caller
+> 
+> [CustomShaderSAN14TestFarA]
+> ps = ShaderFixes\SeasonTestFarA.hlsl
+> draw = from_caller
+> 
+> [CustomShaderSAN14TestNearB]
+> ps = ShaderFixes\SeasonTestNearB.hlsl
+> draw = from_caller
+> 
+> [CustomShaderSAN14TestFarB]
+> ps = ShaderFixes\SeasonTestFarB.hlsl
+> draw = from_caller

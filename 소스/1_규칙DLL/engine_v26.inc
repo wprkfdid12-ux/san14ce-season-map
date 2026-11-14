@@ -950,19 +950,22 @@ static float pf_ms[4]; static int pf_valid[4];
 static double pf_sum[3][4]; static int pf_n[3][4];     /* [group: all, progress, heavy][way] */
 static double pf_min_ms[4] = { 1e9, 1e9, 1e9, 1e9 }, pf_max_ms[4];
 static const int PF_ORDER[4][4] = { { 0, 1, 2, 3 }, { 1, 3, 0, 2 }, { 2, 0, 3, 1 }, { 3, 2, 1, 0 } };
-/* v26k38c: the ways are the route cost - 0 and 2 the new one (each cell weighed), 1 and 3 the old one. The picture is the same in all four
-   (the ground's binding stays the new one: y98 is left at 0). Per way also: the route steps weighed per second and the windows lost to a stall. */
+/* v26k53 test build (ground speed): the ways are how the ground is drawn (x98, read by d3dx.ini and the ground shaders):
+     0 the release ground shader (with the reuse store)   1 the same picture without the reuse store (the GPU's early depth test works)
+     2 the game's own ground (no season picture: what the season ground costs in all)   3 way 1 without the disasters, the weather marks
+       and the northwest winter (how much the size of the shader itself costs).
+   The route cost stays the new one (rc_off 0). Per way also the windows lost to a stall. */
 static u64 pf_rc0; static double pf_rcs[4]; static int pf_rcn[4], pf_stall[4];
-static void pf_set(float *L, int way) { (void)L; rc_off = way & 1; pf_rc0 = rc_calls; }
+static void pf_set(float *L, int way) { if (L) L[98 * 4] = (float)way; rc_off = 0; pf_rc0 = rc_calls; }
 static void perf_summary(void)
 {
     static const char *G[3] = { "all", "during progress", "heavy view (old binds under 60 frames/s)" };
     for (int g = 0; g < 3; g++) { if (!pf_n[g][1]) continue;
         char b[260], *q = b; q = pstr(q, "perf summary ["); q = pstr(q, G[g]); q = pstr(q, "] cycles "); q = pint(q, pf_n[g][1]);
-        static const char *W[4] = { " | route new ", " | route old ", " | route new (2) ", " | route old (2) " };   /* v26k38c */
+        static const char *W[4] = { " | ground release ", " | no reuse ", " | game ground ", " | light " };   /* v26k53 */
         for (int w = 0; w < 4; w++) { double ms = pf_n[g][w] ? pf_sum[g][w] / pf_n[g][w] : 0; q = pstr(q, W[w]); q = pint(q, (int)(ms * 100.0 + 0.5)); q = pstr(q, "/100 ms ("); q = pint(q, ms > 0 ? (int)(1000.0 / ms + 0.5) : 0); q = pstr(q, " fps)"); }
         *q = 0; logs(b); }
-    { char b[200], *q = b; q = pstr(q, "perf range (ms per frame, per 2.5 s window): new "); for (int w = 0; w < 4; w++) { if (w == 1) q = pstr(q, " old "); if (w == 2) q = pstr(q, " new2 "); if (w == 3) q = pstr(q, " old2 "); q = pint(q, (int)(pf_min_ms[w] * 10)); q = pstr(q, ".."); q = pint(q, (int)(pf_max_ms[w] * 10)); q = pstr(q, "/10"); } *q = 0; logs(b); }
+    { char b[200], *q = b; q = pstr(q, "perf range (ms per frame, per 2.5 s window): release "); for (int w = 0; w < 4; w++) { if (w == 1) q = pstr(q, " noreuse "); if (w == 2) q = pstr(q, " game "); if (w == 3) q = pstr(q, " light "); q = pint(q, (int)(pf_min_ms[w] * 10)); q = pstr(q, ".."); q = pint(q, (int)(pf_max_ms[w] * 10)); q = pstr(q, "/10"); } *q = 0; logs(b); }
     { char b[260], *q = b; q = pstr(q, "perf route: steps weighed per s (new / old / new2 / old2) ");
       for (int w = 0; w < 4; w++) { if (w) q = pstr(q, " / "); q = pint(q, pf_rcn[w] ? (int)(pf_rcs[w] / pf_rcn[w] + 0.5) : 0); }
       q = pstr(q, " | windows lost to a stall "); for (int w = 0; w < 4; w++) { if (w) q = pstr(q, " / "); q = pint(q, pf_stall[w]); }
@@ -977,7 +980,7 @@ static void perf_ab(void)
     int front = game_in_front();
     if (pf_prev_now && front) pf_front_ms += now - pf_prev_now; pf_prev_now = now;
     if (pf_state == 0) { pf_state = 1; perf_on = 1; pf_cycle = 0; pf_pos = 0; pf_way = PF_ORDER[0][0]; pf_set(L, pf_way); pf_t0 = now; pf_bad = 0; pf_progress = 0; pf_day0 = day_tick_at; pf_last_fc = fc; pf_last_frame_t = now;
-        logs("perf test (v26k38c): the route cost - new (each cell weighed) and old - take turns every 3 s for a few minutes; frames, route steps and stalls per way"); return; }
+        logs("perf test (v26k53 test build): the ground is drawn 4 ways in turn, 3 s each, for a few minutes - 0 release, 1 no reuse store, 2 the game's own ground, 3 light; frames per way"); return; }
     if (fc != pf_last_fc) { pf_last_fc = fc; pf_last_frame_t = now; } else if (now - pf_last_frame_t >= 300) { if (!(pf_bad & 2) && front) pf_stall[pf_way]++; pf_bad |= 3; }
     if (!front) pf_bad = 1;
     if (day_tick_at != pf_day0) pf_progress = 1;
@@ -992,7 +995,7 @@ static void perf_ab(void)
         int all = (pf_valid[0] & 1) && (pf_valid[1] & 1) && (pf_valid[2] & 1) && (pf_valid[3] & 1), prog = (pf_valid[0] | pf_valid[1] | pf_valid[2] | pf_valid[3]) & 2;
         char b[200], *q = b; q = pstr(q, "perf cycle "); q = pint(q, pf_cycle + 1); q = pstr(q, prog ? " progress" : " still");
         q = pstr(q, all ? "" : " (thrown away)"); q = pstr(q, rain_cells_today >= 200 && shown_level >= 2 ? " rain" : " dry");
-        static const char *W[4] = { ": new ", " old ", " new2 ", " old2 " };
+        static const char *W[4] = { ": release ", " noreuse ", " game ", " light " };
         for (int w = 0; w < 4; w++) { q = pstr(q, W[w]); q = pint(q, (int)(pf_ms[w] * 100.0f + 0.5f)); q = pstr(q, "/100 ms"); }
         *q = 0; logs(b);
         if (all) { pf_done_cycles++;
@@ -1001,7 +1004,7 @@ static void perf_ab(void)
                 if (pf_ms[w] < pf_min_ms[w]) pf_min_ms[w] = pf_ms[w]; if (pf_ms[w] > pf_max_ms[w]) pf_max_ms[w] = pf_ms[w]; } }
         pf_cycle++; pf_pos = 0; pf_valid[0] = pf_valid[1] = pf_valid[2] = pf_valid[3] = 0;
         if (pf_done_cycles >= PF_CYCLES || pf_front_ms >= 8u * 60u * 1000u) {
-            pf_set(L, 0); pf_state = 2; perf_on = 0; perf_summary(); logs("perf test: done - the new way stays"); return; }
+            pf_set(L, 0); pf_state = 2; perf_on = 0; perf_summary(); logs("perf test: done - the release ground stays"); return; }
         if (pf_cycle % 8 == 0) perf_summary();
     }
     pf_way = PF_ORDER[pf_cycle % 4][pf_pos]; pf_set(L, pf_way); pf_t0 = now; pf_f0 = 0.0f; pf_bad = 0; pf_progress = 0; pf_day0 = day_tick_at;

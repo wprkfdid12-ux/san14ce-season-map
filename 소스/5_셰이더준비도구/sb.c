@@ -36,6 +36,9 @@ static int build(Compile cc, const u16 *game, const u16 *src_name, const u16 *bi
     static u16 src[700], bin[700]; src[0] = 0; bin[0] = 0;
     wcat(src, game); wcat(src, L"\\ShaderFixes\\"); wcat(src, src_name);
     wcat(bin, game); wcat(bin, L"\\ShaderFixes\\"); wcat(bin, bin_name);
+    /* v26k53: a cache file the package brought (the installer has already given it its source's time stamp) is kept - only the
+       missing ones are made, so an install that adds one shader does not rebuild all of them */
+    { HANDLE e = CreateFileW(bin, 0x80000000, 1, 0, 3, 0x80, 0); if (e != (HANDLE)(long long)-1) { CloseHandle(e); lputw(src_name); lput(": kept\r\n", -1); return 1; } }
     HANDLE f = CreateFileW(src, 0x80000000, 1, 0, 3, 0x80, 0); if (f == (HANDLE)(long long)-1) return 0;
     FILETIME ft; DWORD n = GetFileSize(f, 0), rd = 0; char *buf = (char *)VirtualAlloc(0, n + 16, 0x3000, 4);
     int ok = buf && GetFileTime(f, 0, 0, &ft) && ReadFile(f, buf, n, &rd, 0) && rd == n; CloseHandle(f); if (!ok) return 0;
@@ -82,6 +85,13 @@ void start(void)
       if (t != (HANDLE)(long long)-1) { CloseHandle(t);
           build(cc, game, L"SeasonGameNear.hlsl", L"SeasonGameNear.ps_5_0.8000.bin", "ps_5_0", 1);
           build(cc, game, L"SeasonGameFar.hlsl", L"SeasonGameFar.ps_5_0.8000.bin", "ps_5_0", 1); } }
+    /* v26k53: the ground variants of the test build's speed test - only when the test build brought them */
+    { static const u16 *tv[4] = { L"SeasonTestNearA", L"SeasonTestFarA", L"SeasonTestNearB", L"SeasonTestFarB" };
+      for (int k = 0; k < 4; k++) { static u16 tp[700], s1[80], s2[80]; tp[0] = 0; s1[0] = 0; s2[0] = 0;
+          wcat(s1, tv[k]); wcat(s1, L".hlsl"); wcat(s2, tv[k]); wcat(s2, L".ps_5_0.8000.bin");
+          wcat(tp, game); wcat(tp, L"\\ShaderFixes\\"); wcat(tp, s1);
+          HANDLE t = CreateFileW(tp, 0x80000000, 1, 0, 3, 0x80, 0);
+          if (t != (HANDLE)(long long)-1) { CloseHandle(t); build(cc, game, s1, s2, "ps_5_0", 1); } } }
     /* v26k27: + the game's ground (near, far) and water shaders carrying the season picture in the same pass */
     static const u16 *rp[6] = { L"8f8964766ab0977e-ps_replace", L"d28d1d5e4d8d3a3c-ps_replace", L"48bed74946919969-ps_replace",
                                 L"d3e1f71e809bac74-ps_replace", L"9addb6cb884c7a7c-ps_replace", L"425be6c323067e73-ps_replace" };

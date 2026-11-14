@@ -1,0 +1,28 @@
+땅 그림 속도 측정 시험판 (v26k53시험, 2026-11-14) — 정식판이 아님
+
+■ 왜
+  땅 셰이더(가까이 d3e1f71e809bac74 / 멀리 9addb6cb884c7a7c)가 점마다 2,000~3,300 명령(순정 226)을 계산한다.
+  v26k29 의 재사용 기능은 셰이더가 저장 공간(UAV, u5)에 쓰기 때문에 GPU 의 '가려진 점 건너뛰기(early depth test)'를
+  꺼 버린다(쓰기 있는 셰이더는 항상 늦은 깊이 검사). 그래서 산 뒤·건물·부대 아래처럼 안 보이는 땅까지 전부 계산할 수 있다.
+  어느 방법이 실제 그래픽카드에서 얼마나 빠른지 숫자로 보려는 시험판.
+
+■ 무엇이 들어 있나
+  · SeasonTestNearA/FarA.hlsl : 정식판 땅 셰이더에서 재사용 저장만 뺀 것(그림 같음). gen_variants.py 로 정식판에서 정확히 잘라 만듦.
+  · SeasonTestNearB/FarB.hlsl : A 에서 재해·땅 위 날씨 자국·서북 겨울을 뺀 가벼운 판(셰이더 덩치·레지스터 비용 재기용, 그림 다름).
+  · d3dx.ini : x98 = 1 → A, 2 → 게임 순정 땅(SeasonGame*.hlsl), 3 → B 로 그리고 원래 그리기는 건너뜀(handling = skip).
+  · 규칙 DLL(-DPERF_AB): 세이브를 불러와 날짜가 흐르면 몇 분(최대 8분 앞화면 시간·36바퀴) 동안 0/1/2/3 을 3초씩 돌아가며
+    프레임 시간을 SeasonRules.log 의 perf 줄에 남김(engine_v26.inc 의 PERF_AB 부분, 정식판 빌드에는 안 들어감).
+  · SeasonShaderPrep(sb.c): 이미 있는 캐시 .bin 은 그대로 두고 없는 것만 만듦 + 시험 셰이더 4개를 있을 때만 만듦.
+
+■ 검증한 것
+  · 검증틀\ : 땅 셰이더 season() 을 C++(g++ -fsingle-precision-constant, gen_hv.py 의 벡터 헤더)로 돌리는 틀.
+    xcheck.py 가 같은 입력·텍스처로 실제 컴파일본(.bin)을 명령 하나씩 흉내 낸 결과(emu_t.py)와 비교: 가까이·멀리 600가지 무작위 입력 전부 일치(최대 차이 0.0002).
+  · A 의 season() 은 정식판과 글자 하나 다르지 않음. B 는 C++ 로 컴파일되고 무작위 입력에서 값이 전부 유한.
+  · perftest.c : 규칙 DLL 의 속도 시험을 길이를 아는 가짜 프레임으로 돌려 길 별 시간이 맞게 나오고 끝나면 x98 = 0 으로 돌아가는지 확인.
+  · 정식판 규칙 DLL(PERF_AB 없이)은 v26k52 와 명령이 똑같음(llvm-objdump 비교).
+  · 셰이더 컴파일 자체는 PC 에서(설치 때 SeasonShaderPrep_log.txt) 확인.
+
+■ 결과 읽기
+  게임 폴더 SAN14Mods\SeasonRules\SeasonRules.log :
+    perf cycle N still|progress rain|dry: release .. noreuse .. game .. light ..  (1/100 ms)
+    perf summary [all] / [during progress] / [heavy view] ...

@@ -1,0 +1,2 @@
+def rdef(p):
+    return [], []

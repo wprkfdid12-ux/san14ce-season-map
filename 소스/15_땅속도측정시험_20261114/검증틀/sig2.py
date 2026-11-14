@@ -1,0 +1,2 @@
+def sig(p):
+    return {}
