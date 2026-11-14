@@ -936,40 +936,72 @@ static void wl_watch(void)
 #ifndef PF_CYCLES
 #define PF_CYCLES 36
 #endif
-/* ---- v26k27 speed test (test build only): the map is drawn three ways in turn, 3 seconds each, for the first minutes after a
-   save is loaded, and the frame time of each way is written to the log:
-     way 0 new  - the ground drawn once with the season picture inside, winter water without an extra pass per piece
-     way 1 old  - as in v26k23 (the ground drawn twice, the winter water redrawn piece by piece)
-     way 2 game - the game alone (no season picture on the ground, water, trees, no rain picture)
-     way 3 new without the rain picture (clouds, curtains, drops) - how much the rain costs
-   The first 0.5 s after a switch are not counted; a window with the game away from the front or a stall (no new frame for
-   0.3 s: loading, the game's own turn work) is thrown away. Each cycle runs the three ways in a different order. ---- */
+/* ---- v26k53b speed test (test build only): for the first minutes after a save is loaded the ground is drawn two ways in turn,
+   3 seconds each - both with exactly the same picture, so nothing on screen changes:
+     ways 0, 2: the release ground shader (copy 0, with the reuse store)     ways 1, 3: the same picture without the reuse store (A)
+   (z98 = way & 1 is read by d3dx.ini). Per way: the frame time and the game's 3D engine use (the GPU figure Task Manager shows,
+   from the system's performance counters) - where the frame rate is not held back by the ground, the GPU use still shows what
+   each way costs. The first 0.5 s after a switch are not counted; a window with the game away from the front or a stall (no new
+   frame for 0.3 s) is thrown away. Each cycle runs the four slots in a different order. ---- */
+IMP void *WINAPI LoadLibraryW(const u16 *); IMP void *WINAPI GetProcAddress(void *, const char *);
+typedef long (WINAPI *PdhOpenQueryW_t)(const u16 *, u64, void **);
+typedef long (WINAPI *PdhAddEnglishCounterW_t)(void *, const u16 *, u64, void **);
+typedef long (WINAPI *PdhCollectQueryData_t)(void *);
+typedef long (WINAPI *PdhGetFormattedCounterArrayW_t)(void *, DWORD, DWORD *, DWORD *, void *);
+static PdhCollectQueryData_t pdh_collect; static PdhGetFormattedCounterArrayW_t pdh_array; static void *pdh_q, *pdh_c; static int pdh_state;
+static void pdh_init(void)
+{
+    pdh_state = -1;
+    void *m = LoadLibraryW(L"pdh.dll"); if (!m) { logs("perf: GPU use not available (pdh.dll)"); return; }
+    PdhOpenQueryW_t op = (PdhOpenQueryW_t)GetProcAddress(m, "PdhOpenQueryW");
+    PdhAddEnglishCounterW_t add = (PdhAddEnglishCounterW_t)GetProcAddress(m, "PdhAddEnglishCounterW");
+    pdh_collect = (PdhCollectQueryData_t)GetProcAddress(m, "PdhCollectQueryData");
+    pdh_array = (PdhGetFormattedCounterArrayW_t)GetProcAddress(m, "PdhGetFormattedCounterArrayW");
+    if (!op || !add || !pdh_collect || !pdh_array) { logs("perf: GPU use not available (functions)"); return; }
+    long r = op(0, 0, &pdh_q); if (r != 0 || !pdh_q) { logs("perf: GPU use not available (query)"); return; }
+    static u16 path[160]; int n = 0; const char *a = "\\GPU Engine(pid_"; while (*a) path[n++] = (u16)*a++;
+    { char d[16]; int k = 0; DWORD pid = GetCurrentProcessId(); do { d[k++] = (char)('0' + pid % 10); pid /= 10; } while (pid); while (k) path[n++] = (u16)d[--k]; }
+    a = "_*engtype_3D)\\Utilization Percentage"; while (*a) path[n++] = (u16)*a++; path[n] = 0;
+    r = add(pdh_q, path, 0, &pdh_c); if (r != 0 || !pdh_c) { char b[120], *q = b; q = pstr(q, "perf: GPU use not available (counter "); q = phex(q, (u64)(u32)r); q = pstr(q, ")"); *q = 0; logs(b); return; }
+    pdh_collect(pdh_q); pdh_state = 1; logs("perf: GPU use on (this game's 3D engine, Task Manager's figure)");
+}
+/* the 3D engine use since the previous call, in percent (this game's 3D engines added up); -1 when not known */
+static double pdh_read(void)
+{
+    if (pdh_state != 1) return -1.0;
+    if (pdh_collect(pdh_q) != 0) return -1.0;
+    static u8 buf[65536]; DWORD size = sizeof(buf), cnt = 0;
+    long r = pdh_array(pdh_c, 0x00000200 /* PDH_FMT_DOUBLE */, &size, &cnt, buf);
+    if (r != 0 || cnt == 0 || (u64)cnt * 24 > sizeof(buf)) return -1.0;
+    double s = 0; int got = 0;
+    for (DWORD i = 0; i < cnt; i++) { u8 *it = buf + (u64)i * 24; DWORD st = *(DWORD *)(it + 8); double v = *(double *)(it + 16);   /* {name, {status, value}} */
+        if ((st == 0 || st == 1) && v >= 0.0 && v <= 1000.0) { s += v; got++; } }
+    return got ? s : -1.0;
+}
 static int pf_state, pf_way, pf_cycle, pf_pos, pf_bad, pf_progress, pf_done_cycles;
 static u64 pf_t0, pf_last_frame_t; static float pf_f0, pf_last_fc; static u64 pf_day0; static u64 pf_front_ms, pf_prev_now;
-static float pf_ms[4]; static int pf_valid[4];
-static double pf_sum[3][4]; static int pf_n[3][4];     /* [group: all, progress, heavy][way] */
+static float pf_ms[4]; static int pf_valid[4]; static double pf_gpu[4];
+static double pf_sum[3][4], pf_gsum[3][4]; static int pf_n[3][4], pf_gn[3][4];     /* [group: all, progress, still][slot] */
 static double pf_min_ms[4] = { 1e9, 1e9, 1e9, 1e9 }, pf_max_ms[4];
-static const int PF_ORDER[4][4] = { { 0, 1, 2, 3 }, { 1, 3, 0, 2 }, { 2, 0, 3, 1 }, { 3, 2, 1, 0 } };
-/* v26k53 test build (ground speed): the ways are how the ground is drawn (x98, read by d3dx.ini and the ground shaders):
-     0 the release ground shader (with the reuse store)   1 the same picture without the reuse store (the GPU's early depth test works)
-     2 the game's own ground (no season picture: what the season ground costs in all)   3 way 1 without the disasters, the weather marks
-       and the northwest winter (how much the size of the shader itself costs).
-   The route cost stays the new one (rc_off 0). Per way also the windows lost to a stall. */
-static u64 pf_rc0; static double pf_rcs[4]; static int pf_rcn[4], pf_stall[4];
-static void pf_set(float *L, int way) { if (L) L[98 * 4] = (float)way; rc_off = 0; pf_rc0 = rc_calls; }
+static const int PF_ORDER[4][4] = { { 0, 1, 2, 3 }, { 1, 0, 3, 2 }, { 2, 3, 0, 1 }, { 3, 2, 1, 0 } };
+static u64 pf_rc0; static int pf_stall[4];
+static void pf_set(float *L, int way) { if (L) L[98 * 4 + 2] = (float)(way & 1); rc_off = 0; pf_rc0 = rc_calls; }
+static char *pdec(char *q, double v, int scale) { if (v < 0) return pstr(q, "?"); return pint(q, (int)(v * scale + 0.5)); }
 static void perf_summary(void)
 {
-    static const char *G[3] = { "all", "during progress", "heavy view (old binds under 60 frames/s)" };
-    for (int g = 0; g < 3; g++) { if (!pf_n[g][1]) continue;
-        char b[260], *q = b; q = pstr(q, "perf summary ["); q = pstr(q, G[g]); q = pstr(q, "] cycles "); q = pint(q, pf_n[g][1]);
-        static const char *W[4] = { " | ground release ", " | no reuse ", " | game ground ", " | light " };   /* v26k53 */
-        for (int w = 0; w < 4; w++) { double ms = pf_n[g][w] ? pf_sum[g][w] / pf_n[g][w] : 0; q = pstr(q, W[w]); q = pint(q, (int)(ms * 100.0 + 0.5)); q = pstr(q, "/100 ms ("); q = pint(q, ms > 0 ? (int)(1000.0 / ms + 0.5) : 0); q = pstr(q, " fps)"); }
+    static const char *G[3] = { "all", "during progress", "standing still" };
+    for (int g = 0; g < 3; g++) {
+        double ms[2] = { 0, 0 }, gp[2] = { -1, -1 }; int n[2] = { 0, 0 };
+        for (int w = 0; w < 4; w++) { ms[w & 1] += pf_sum[g][w]; n[w & 1] += pf_n[g][w]; }
+        if (!n[0] || !n[1]) continue;
+        for (int k = 0; k < 2; k++) { double gs = 0; int gn = 0; for (int w = k; w < 4; w += 2) { gs += pf_gsum[g][w]; gn += pf_gn[g][w]; } if (gn) gp[k] = gs / gn; ms[k] /= n[k]; }
+        char b[300], *q = b; q = pstr(q, "perf summary ["); q = pstr(q, G[g]); q = pstr(q, "] windows "); q = pint(q, n[0]); q = pstr(q, "+"); q = pint(q, n[1]);
+        static const char *W[2] = { " | release ", " | no reuse " };
+        for (int k = 0; k < 2; k++) { q = pstr(q, W[k]); q = pint(q, (int)(ms[k] * 100.0 + 0.5)); q = pstr(q, "/100 ms ("); q = pint(q, ms[k] > 0 ? (int)(1000.0 / ms[k] + 0.5) : 0); q = pstr(q, " fps), GPU 3D ");
+            q = pdec(q, gp[k], 10); q = pstr(q, "/10 %, GPU per frame "); q = pdec(q, gp[k] >= 0 ? gp[k] / 100.0 * ms[k] : -1.0, 100); q = pstr(q, "/100 ms"); }
         *q = 0; logs(b); }
-    { char b[200], *q = b; q = pstr(q, "perf range (ms per frame, per 2.5 s window): release "); for (int w = 0; w < 4; w++) { if (w == 1) q = pstr(q, " noreuse "); if (w == 2) q = pstr(q, " game "); if (w == 3) q = pstr(q, " light "); q = pint(q, (int)(pf_min_ms[w] * 10)); q = pstr(q, ".."); q = pint(q, (int)(pf_max_ms[w] * 10)); q = pstr(q, "/10"); } *q = 0; logs(b); }
-    { char b[260], *q = b; q = pstr(q, "perf route: steps weighed per s (new / old / new2 / old2) ");
-      for (int w = 0; w < 4; w++) { if (w) q = pstr(q, " / "); q = pint(q, pf_rcn[w] ? (int)(pf_rcs[w] / pf_rcn[w] + 0.5) : 0); }
-      q = pstr(q, " | windows lost to a stall "); for (int w = 0; w < 4; w++) { if (w) q = pstr(q, " / "); q = pint(q, pf_stall[w]); }
-      q = pstr(q, " | cells weighed dearer "); q = pint(q, (int)(rc_mulled > 2000000000ull ? 2000000000ull : rc_mulled)); *q = 0; logs(b); }
+    { char b[200], *q = b; q = pstr(q, "perf range (ms per frame, per 2.5 s window): release "); for (int w = 0; w < 4; w++) { if (w == 1) q = pstr(q, " noreuse "); if (w == 2) q = pstr(q, " release2 "); if (w == 3) q = pstr(q, " noreuse2 "); q = pint(q, (int)(pf_min_ms[w] * 10)); q = pstr(q, ".."); q = pint(q, (int)(pf_max_ms[w] * 10)); q = pstr(q, "/10"); }
+      q = pstr(q, " | windows lost to a stall "); for (int w = 0; w < 4; w++) { if (w) q = pstr(q, " / "); q = pint(q, pf_stall[w]); } *q = 0; logs(b); }
 }
 static void perf_ab(void)
 {
@@ -979,28 +1011,28 @@ static void perf_ab(void)
     u64 now = GetTickCount64(); float fc = L[IP_CTRL * 4];
     int front = game_in_front();
     if (pf_prev_now && front) pf_front_ms += now - pf_prev_now; pf_prev_now = now;
-    if (pf_state == 0) { pf_state = 1; perf_on = 1; pf_cycle = 0; pf_pos = 0; pf_way = PF_ORDER[0][0]; pf_set(L, pf_way); pf_t0 = now; pf_bad = 0; pf_progress = 0; pf_day0 = day_tick_at; pf_last_fc = fc; pf_last_frame_t = now;
-        logs("perf test (v26k53 test build): the ground is drawn 4 ways in turn, 3 s each, for a few minutes - 0 release, 1 no reuse store, 2 the game's own ground, 3 light; frames per way"); return; }
+    if (pf_state == 0) { pf_state = 1; perf_on = 1; pdh_init(); pf_cycle = 0; pf_pos = 0; pf_way = PF_ORDER[0][0]; pf_set(L, pf_way); pf_t0 = now; pf_bad = 0; pf_progress = 0; pf_day0 = day_tick_at; pf_last_fc = fc; pf_last_frame_t = now;
+        logs("perf test (v26k53b test build): the ground is drawn 2 ways with the same picture, 3 s each, for a few minutes - release / without the reuse store; frames and GPU use per way"); return; }
     if (fc != pf_last_fc) { pf_last_fc = fc; pf_last_frame_t = now; } else if (now - pf_last_frame_t >= 300) { if (!(pf_bad & 2) && front) pf_stall[pf_way]++; pf_bad |= 3; }
     if (!front) pf_bad = 1;
     if (day_tick_at != pf_day0) pf_progress = 1;
     u64 el = now - pf_t0;
-    if (el >= 500 && pf_f0 == 0.0f) { pf_f0 = fc; pf_bad = 0; pf_progress = 0; pf_day0 = day_tick_at; pf_t0 = now - 500; pf_rc0 = rc_calls; return; }   /* counting starts after the settle */
+    if (el >= 500 && pf_f0 == 0.0f) { pf_f0 = fc; pf_bad = 0; pf_progress = 0; pf_day0 = day_tick_at; pf_t0 = now - 500; pf_rc0 = rc_calls; (void)pdh_read(); return; }   /* counting (and the GPU use) starts after the settle */
     if (el < 3000) return;
     float frames = fc - pf_f0; int ok = !pf_bad && pf_f0 > 0.0f && frames >= 5.0f;
-    { u64 st = rc_calls - pf_rc0; if (front) { pf_rcs[pf_way] += (double)st / ((double)(el - 500) / 1000.0); pf_rcn[pf_way]++; } }
+    pf_gpu[pf_way] = pdh_read();
     pf_ms[pf_way] = ok ? 2500.0f / frames : 0; pf_valid[pf_way] = ok; if (pf_progress) pf_valid[pf_way] |= 2;
     pf_pos++;
     if (pf_pos == 4) {                              /* a cycle is complete */
         int all = (pf_valid[0] & 1) && (pf_valid[1] & 1) && (pf_valid[2] & 1) && (pf_valid[3] & 1), prog = (pf_valid[0] | pf_valid[1] | pf_valid[2] | pf_valid[3]) & 2;
-        char b[200], *q = b; q = pstr(q, "perf cycle "); q = pint(q, pf_cycle + 1); q = pstr(q, prog ? " progress" : " still");
+        char b[260], *q = b; q = pstr(q, "perf cycle "); q = pint(q, pf_cycle + 1); q = pstr(q, prog ? " progress" : " still");
         q = pstr(q, all ? "" : " (thrown away)"); q = pstr(q, rain_cells_today >= 200 && shown_level >= 2 ? " rain" : " dry");
-        static const char *W[4] = { ": release ", " noreuse ", " game ", " light " };
-        for (int w = 0; w < 4; w++) { q = pstr(q, W[w]); q = pint(q, (int)(pf_ms[w] * 100.0f + 0.5f)); q = pstr(q, "/100 ms"); }
+        static const char *W[4] = { ": release ", " | noreuse ", " | release2 ", " | noreuse2 " };
+        for (int w = 0; w < 4; w++) { q = pstr(q, W[w]); q = pint(q, (int)(pf_ms[w] * 100.0f + 0.5f)); q = pstr(q, "/100 ms GPU "); q = pdec(q, pf_gpu[w], 10); q = pstr(q, "/10 %"); }
         *q = 0; logs(b);
         if (all) { pf_done_cycles++;
-            int heavy = pf_ms[1] > 16.7f;
-            for (int w = 0; w < 4; w++) { pf_sum[0][w] += pf_ms[w]; pf_n[0][w]++; if (prog) { pf_sum[1][w] += pf_ms[w]; pf_n[1][w]++; } if (heavy) { pf_sum[2][w] += pf_ms[w]; pf_n[2][w]++; }
+            for (int w = 0; w < 4; w++) { int gs[2] = { 0, prog ? 1 : 2 };
+                for (int k = 0; k < 2; k++) { int g = gs[k]; pf_sum[g][w] += pf_ms[w]; pf_n[g][w]++; if (pf_gpu[w] >= 0) { pf_gsum[g][w] += pf_gpu[w]; pf_gn[g][w]++; } }
                 if (pf_ms[w] < pf_min_ms[w]) pf_min_ms[w] = pf_ms[w]; if (pf_ms[w] > pf_max_ms[w]) pf_max_ms[w] = pf_ms[w]; } }
         pf_cycle++; pf_pos = 0; pf_valid[0] = pf_valid[1] = pf_valid[2] = pf_valid[3] = 0;
         if (pf_done_cycles >= PF_CYCLES || pf_front_ms >= 8u * 60u * 1000u) {

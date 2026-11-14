@@ -29,3 +29,5 @@ VirtualQuery
 ReadProcessMemory
  AddVectoredExceptionHandler
  GetModuleHandleExW
+LoadLibraryW
+GetProcAddress

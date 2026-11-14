@@ -86,7 +86,7 @@ void start(void)
           build(cc, game, L"SeasonGameNear.hlsl", L"SeasonGameNear.ps_5_0.8000.bin", "ps_5_0", 1);
           build(cc, game, L"SeasonGameFar.hlsl", L"SeasonGameFar.ps_5_0.8000.bin", "ps_5_0", 1); } }
     /* v26k53: the ground variants of the test build's speed test - only when the test build brought them */
-    { static const u16 *tv[4] = { L"SeasonTestNearA", L"SeasonTestFarA", L"SeasonTestNearB", L"SeasonTestFarB" };
+    { static const u16 *tv[4] = { L"SeasonTestNear0", L"SeasonTestFar0", L"SeasonTestNearA", L"SeasonTestFarA" };
       for (int k = 0; k < 4; k++) { static u16 tp[700], s1[80], s2[80]; tp[0] = 0; s1[0] = 0; s2[0] = 0;
           wcat(s1, tv[k]); wcat(s1, L".hlsl"); wcat(s2, tv[k]); wcat(s2, L".ps_5_0.8000.bin");
           wcat(tp, game); wcat(tp, L"\\ShaderFixes\\"); wcat(tp, s1);
