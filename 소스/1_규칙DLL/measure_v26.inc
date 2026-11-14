@@ -1,4 +1,7 @@
-/* ==== v26k35 MEASURE build only: where the frames go while the turn runs.
+/* ==== v26k54 MEASURE build (test only): where a frame's time goes - on the CPU (this sampler: which module each busy thread is in,
+   the game / the graphics tool / the 2D mod / the season DLL / other mods / the driver / waiting) and on the graphics card (the
+   graphics card's own clock around every season-picture draw, gpuprof_v26.inc, plus the Task Manager GPU figure).
+   (from v26k35) where the frames go while the turn runs.
    1) Every frame: the graphics tool's frame counter (list entry 100.x) is watched ~1000x a second, so every frame's length is
       known. Frames are split into "progress" (within 2.5 s of a day tick) and "idle".
    2) Sampling: about every millisecond the game's window thread and the up-to-three busiest other threads are paused for a few
@@ -21,6 +24,7 @@ IMP BOOL WINAPI GetThreadTimes(HANDLE, u64 *, u64 *, u64 *, u64 *);
 IMP void *WINAPI LoadLibraryW(const u16 *); IMP void *WINAPI GetProcAddress(void *, const char *);
 IMP BOOL WINAPI SetThreadPriority(HANDLE, int); IMP HANDLE WINAPI GetCurrentThread(void);
 
+static void gp_tick(void); static void gp_summary(void *h);   /* v26k54: gpuprof_v26.inc */
 #define MS_MODS 256
 typedef struct { u64 base, end; char name[32]; const u32 *pd; u32 npd; int nr; u64 rlo[24], rhi[24]; } MSMOD;
 static MSMOD *ms_mod; static int ms_nmod; static u64 ms_exe_base;
@@ -35,6 +39,10 @@ static void ms_mods_refresh(void)
     for (BOOL ok = Module32FirstW(s, &me); ok && n < MS_MODS; ok = Module32NextW(s, &me)) {
         MSMOD *m = &tmp[n]; m->base = (u64)me.modBaseAddr; m->end = m->base + me.modBaseSize; m->pd = 0; m->npd = 0; m->nr = 0;
         int k = 0; for (; k < 31 && me.szModule[k]; k++) { u16 c = me.szModule[k]; m->name[k] = (char)(c < 0x80 ? (c >= 'A' && c <= 'Z' ? c + 32 : c) : '_'); } m->name[k] = 0;
+        { const char *dn = "d3d11.dll"; int eq = 1; for (int q = 0; q < 10; q++) if (m->name[q] != dn[q]) eq = 0;   /* v26k54: the graphics tool (game folder) apart from the system one */
+          int sys = 0; for (int q = 0; me.szExePath[q] && q < 250; q++) { u16 a = me.szExePath[q] | 0x20, b2 = me.szExePath[q + 1] | 0x20, c2 = me.szExePath[q + 2] | 0x20, d2 = me.szExePath[q + 3] | 0x20;
+              if (me.szExePath[q] == '\\' && (b2 == 's') && (c2 == 'y') && (d2 == 's')) { sys = 1; break; } (void)a; }
+          if (eq && !sys) { const char *nn = "3dmigoto-d3d11.dll"; int q = 0; for (; nn[q]; q++) m->name[q] = nn[q]; m->name[q] = 0; } }
         /* readable ranges inside the image (some sections may be no-access) */
         for (u64 a = m->base; a < m->end && m->nr < 24; ) { MBI mb; if (VirtualQuery((void *)a, &mb, sizeof(mb)) != sizeof(mb)) break;
             u64 lo = (u64)mb.Base, hi = lo + mb.Size; if (hi > m->end) hi = m->end;
@@ -76,9 +84,9 @@ static int ms_is_ret(u64 v)
     if (p[-6] == 0xFF && p[-5] == 0x15) return 1;                        /* call [rip+x] */
     if (p[-2] == 0xFF && (p[-1] & 0xF8) == 0xD0) return 1;               /* call reg */
     if (p[-3] == 0xFF && (p[-2] & 0xF8) == 0x50) return 1;               /* call [reg+d8] */
-    if (p[-4] == 0xFF && (p[-3] & 0xF8) == 0x54) return 1;               /* call [reg+reg*s+d8] */
+    if (p[-4] == 0xFF && p[-3] == 0x54) return 1;                        /* call [reg+reg*s+d8] (v26k54: the exact ModRM byte - the old mask never matched) */
     if (p[-6] == 0xFF && (p[-5] & 0xF8) == 0x90) return 1;               /* call [reg+d32] */
-    if (p[-7] == 0xFF && (p[-6] & 0xF8) == 0x94) return 1;               /* call [reg+reg*s+d32] */
+    if (p[-7] == 0xFF && p[-6] == 0x94) return 1;                        /* call [reg+reg*s+d32] */
     if (p[-2] == 0xFF && (p[-1] & 0xF8) == 0x10) return 1;               /* call [reg] */
     return 0;
 }
@@ -93,6 +101,17 @@ typedef struct { u64 key; u32 ex, in; } SECENT;
 static SECENT ms_secs[2][SEC_HT]; static int ms_secs_n[2];
 static void sec_add(int w, u64 key, int ex) { SECENT *T = ms_secs[w]; u32 i = (u32)((key >> 4) * 2654435761u) & (SEC_HT - 1);
     for (int k = 0; k < SEC_HT; k++, i = (i + 1) & (SEC_HT - 1)) { if (T[i].key == key) { if (ex) T[i].ex++; else T[i].in++; return; } if (!T[i].key) { if (ms_secs_n[w] > SEC_HT * 3 / 4) return; ms_secs_n[w]++; T[i].key = key; T[i].ex = ex ? 1 : 0; T[i].in = ex ? 0 : 1; return; } } }
+/* ---- v26k54: per module - IN (the module the thread was in), UNDER (any module on its call chain); [phase][slot] ---- */
+#define MS_MST 256
+typedef struct { u64 base; char name[32]; u32 ex[2][4], in[2][4]; } MSMST;
+static MSMST ms_mst[MS_MST]; static int ms_nmst; static u64 ms_wait[2][4];
+static MSMST *ms_mstat(int mi)
+{
+    u64 base = mi >= 0 ? ms_mod[mi].base : 0;
+    for (int i = 0; i < ms_nmst; i++) if (ms_mst[i].base == base) return &ms_mst[i];
+    if (ms_nmst >= MS_MST) return 0; MSMST *e = &ms_mst[ms_nmst++]; e->base = base;
+    const char *n = mi >= 0 ? ms_mod[mi].name : "(no module)"; int q = 0; for (; q < 31 && n[q]; q++) e->name[q] = n[q]; e->name[q] = 0; return e;
+}
 /* ---- threads ---- */
 #define MS_TH 160
 typedef struct { DWORD tid; HANDLE h; u64 cpu, dcpu; u64 sbase; int seen; } MSTH;
@@ -128,7 +147,9 @@ static void ms_threads_refresh(int phase_progress)
     for (int s2 = 0; s2 < 4; s2++) { ms_slot_tid[s2] = ms_slot_th[s2] >= 0 ? ms_th[ms_slot_th[s2]].tid : 0; if (ms_slot_th[s2] >= 0) ms_slot_cpu[phase_progress][s2] += ms_th[ms_slot_th[s2]].dcpu; }
 }
 /* ---- frames ---- */
-static u32 ms_fh[2][9]; static u64 ms_frames[2]; static double ms_ftime[2];
+static u32 ms_fh[2][9]; static u64 ms_frames[2]; static double ms_ftime[2]; static u64 ms_front_frames[2], ms_win_frames;
+/* v26k54: the Task Manager GPU figure over each 2 s window: [phase] sum of busy ms, window ms, frames */
+static double ms_gbusy[2], ms_gwin[2]; static u64 ms_gfr[2], ms_gn[2]; static u64 ms_gwin_t0;
 static const int MS_FB[8] = { 10, 17, 25, 34, 50, 100, 250, 1000 };
 typedef struct { float ms; int prog; SYSTEMTIME t; } MSLONG;
 static MSLONG ms_long[24]; static int ms_nlong;
@@ -141,6 +162,63 @@ static void ms_frame(double ms, int prog)
 }
 static __attribute__((aligned(16))) u8 ms_ctx[1232 + 64];
 static void ct_summary(void *h);
+/* ---- v26k54: the Task Manager GPU figure (this game's 3D engine, from the system's performance counters) ---- */
+typedef long (WINAPI *MSPdhOpenQueryW_t)(const u16 *, u64, void **);
+typedef long (WINAPI *MSPdhAddEnglishCounterW_t)(void *, const u16 *, u64, void **);
+typedef long (WINAPI *MSPdhCollectQueryData_t)(void *);
+typedef long (WINAPI *MSPdhGetFormattedCounterArrayW_t)(void *, DWORD, DWORD *, DWORD *, void *);
+static MSPdhCollectQueryData_t ms_pdh_collect; static MSPdhGetFormattedCounterArrayW_t ms_pdh_array; static void *ms_pdh_q, *ms_pdh_c; static int ms_pdh_state;
+static void ms_pdh_init(void)
+{
+    ms_pdh_state = -1;
+    void *m = LoadLibraryW(L"pdh.dll"); if (!m) { logs("measure: GPU use not available (pdh.dll)"); return; }
+    MSPdhOpenQueryW_t op = (MSPdhOpenQueryW_t)GetProcAddress(m, "PdhOpenQueryW");
+    MSPdhAddEnglishCounterW_t add = (MSPdhAddEnglishCounterW_t)GetProcAddress(m, "PdhAddEnglishCounterW");
+    ms_pdh_collect = (MSPdhCollectQueryData_t)GetProcAddress(m, "PdhCollectQueryData");
+    ms_pdh_array = (MSPdhGetFormattedCounterArrayW_t)GetProcAddress(m, "PdhGetFormattedCounterArrayW");
+    if (!op || !add || !ms_pdh_collect || !ms_pdh_array) { logs("measure: GPU use not available (functions)"); return; }
+    if (op(0, 0, &ms_pdh_q) != 0 || !ms_pdh_q) { logs("measure: GPU use not available (query)"); return; }
+    static u16 path[160]; int n = 0; const char *a = "\\GPU Engine(pid_"; while (*a) path[n++] = (u16)*a++;
+    { char d[16]; int k = 0; DWORD pid = GetCurrentProcessId(); do { d[k++] = (char)('0' + pid % 10); pid /= 10; } while (pid); while (k) path[n++] = (u16)d[--k]; }
+    a = "_*engtype_3D)\\Utilization Percentage"; while (*a) path[n++] = (u16)*a++; path[n] = 0;
+    long r = add(ms_pdh_q, path, 0, &ms_pdh_c); if (r != 0 || !ms_pdh_c) { logs("measure: GPU use not available (counter)"); return; }
+    ms_pdh_collect(ms_pdh_q); ms_pdh_state = 1; logs("measure: GPU use on (this game's 3D engine, Task Manager's figure)");
+}
+static double ms_pdh_read(void)                     /* percent since the previous call, this game's 3D engines added up; -1 = not known */
+{
+    if (ms_pdh_state != 1 || ms_pdh_collect(ms_pdh_q) != 0) return -1.0;
+    static u8 buf[65536]; DWORD size = sizeof(buf), cnt = 0;
+    long r = ms_pdh_array(ms_pdh_c, 0x00000200 /* PDH_FMT_DOUBLE */, &size, &cnt, buf);
+    if (r != 0 || cnt == 0 || (u64)cnt * 24 > sizeof(buf)) return -1.0;
+    double sm = 0; int got = 0;
+    for (DWORD i = 0; i < cnt; i++) { u8 *it = buf + (u64)i * 24; DWORD st = *(DWORD *)(it + 8); double v = *(double *)(it + 16);
+        if ((st == 0 || st == 1) && v >= 0.0 && v <= 1000.0) { sm += v; got++; } }
+    return got ? sm : -1.0;
+}
+static void ms_wr(HANDLE h, const char *b, char *e);
+static char *ms_dec(char *p, double v, int scale) { if (v < 0) return pstr(p, "?"); i64 x = (i64)(v * scale + 0.5); p = pint(p, x / scale); if (scale > 1) { *p++ = '.'; i64 f = x % scale; for (int d = scale / 10; d >= 1; d /= 10) { *p++ = (char)('0' + (f / d) % 10); } } return p; }
+static void ms_mod_summary(void *hh)
+{
+    HANDLE h = (HANDLE)hh; static char b[4096]; static const char *PH[2] = { "IDLE", "PROGRESS" }; static const char *SL[4] = { "window thread", "busy thread A", "busy thread B", "busy thread C" };
+    for (int ph = 0; ph < 2; ph++) for (int sl = 0; sl < 4; sl++) {
+        u64 tot = ms_slot_samples[ph][sl]; if (!tot) continue;
+        char *p = b; p = pstr(p, "\r\n== MODULES / "); p = pstr(p, PH[ph]); p = pstr(p, " / "); p = pstr(p, SL[sl]); p = pstr(p, ": samples "); p = pint(p, (i64)tot);
+        p = pstr(p, ", cpu ms "); p = pint(p, (i64)(ms_slot_cpu[ph][sl] / 10000)); p = pstr(p, ", waiting in the kernel "); p = ms_dec(p, (double)ms_wait[ph][sl] * 100.0 / (double)tot, 10); p = pstr(p, "%\r\n"); ms_wr(h, b, p);
+        for (int ex = 1; ex >= 0; ex--) { p = b; p = pstr(p, ex ? "  IN (%):" : "  UNDER (%):"); static int pk[24]; int np = 0;
+            for (int r = 0; r < 20; r++) { u32 best = 0; int bi = -1; for (int i = 0; i < ms_nmst; i++) { u32 v = ex ? ms_mst[i].ex[ph][sl] : ms_mst[i].in[ph][sl]; if (v > best) { int d = 0; for (int q = 0; q < np; q++) if (pk[q] == i) d = 1; if (!d) { best = v; bi = i; } } }
+                if (bi < 0) break; pk[np++] = bi; *p++ = ' '; p = pstr(p, ms_mst[bi].name); *p++ = '='; p = ms_dec(p, (double)best * 100.0 / (double)tot, 10); }
+            p = pstr(p, "\r\n"); ms_wr(h, b, p); } }
+}
+static void ms_gpu_summary(void *hh)
+{
+    HANDLE h = (HANDLE)hh; static char b[600]; static const char *PH[2] = { "IDLE", "PROGRESS" };
+    char *p = b; p = pstr(p, "\r\n== GPU USE (Task Manager figure, this game's 3D engine) "); p = pstr(p, ms_pdh_state == 1 ? "on" : "NOT AVAILABLE"); p = pstr(p, "\r\n"); ms_wr(h, b, p);
+    for (int ph = 0; ph < 2; ph++) { if (!ms_gn[ph] || ms_gwin[ph] <= 0 || !ms_gfr[ph]) continue; p = b;
+        double pct = ms_gbusy[ph] * 100.0 / ms_gwin[ph], fps = (double)ms_gfr[ph] * 1000.0 / ms_gwin[ph], fms = ms_gwin[ph] / (double)ms_gfr[ph], busy = ms_gbusy[ph] / (double)ms_gfr[ph];
+        p = pstr(p, "  "); p = pstr(p, PH[ph]); p = pstr(p, ": windows "); p = pint(p, (i64)ms_gn[ph]); p = pstr(p, " ("); p = pint(p, (i64)(ms_gwin[ph] / 1000.0)); p = pstr(p, " s), GPU 3D ");
+        p = ms_dec(p, pct, 10); p = pstr(p, " %, frames/s "); p = ms_dec(p, fps, 10); p = pstr(p, ", frame ms "); p = ms_dec(p, fms, 100); p = pstr(p, ", GPU busy per frame ms "); p = ms_dec(p, busy, 100);
+        p = pstr(p, " | frames counted "); p = pint(p, (i64)ms_frames[ph]); p = pstr(p, " (with the game in front "); p = pint(p, (i64)ms_front_frames[ph]); p = pstr(p, ")\r\n"); ms_wr(h, b, p); }
+}
 /* ---- output ---- */
 static u16 ms_path[600], ms_spath[600];
 static void ms_name(char **pp, u64 key)
@@ -156,7 +234,7 @@ static void ms_write_summary(void)
 {
     HANDLE h = CreateFileW(ms_path, 0x40000000, 1, 0, 2, 0x80, 0); if (h == (HANDLE)(i64)-1) return;
     static char b[4096]; char *p = b; SYSTEMTIME t; GetLocalTime(&t);
-    p = pstr(p, "SeasonMeasure v26k36 - written "); p = pint(p, t.h); *p++ = ':'; p = pint(p, t.mi); *p++ = ':'; p = pint(p, t.s);
+    p = pstr(p, "SeasonMeasure v26k54 - written "); p = pint(p, t.h); *p++ = ':'; p = pint(p, t.mi); *p++ = ':'; p = pint(p, t.s);
     p = pstr(p, "  sampler ticks "); p = pint(p, (i64)ms_ticks); p = pstr(p, " samples "); p = pint(p, (i64)ms_samples_total);
     p = pstr(p, " over s "); p = pint(p, (i64)((GetTickCount64() - ms_t0) / 1000)); p = pstr(p, "\r\n"); ms_wr(h, b, p);
     static const char *PH[2] = { "IDLE", "PROGRESS" };
@@ -178,6 +256,7 @@ static void ms_write_summary(void)
             for (int r = 0; r < 24; r++) { u32 best = 0; int bi = -1; for (int i = 0; i < MS_HT; i++) if (ms_ht[i].key && ms_ht[i].c[ci] > best) { int dup = 0; for (int q = 0; q < np; q++) if (picked[q] == (u32)i) dup = 1; if (!dup) { best = ms_ht[i].c[ci]; bi = i; } }
                 if (bi < 0) break; picked[np++] = (u32)bi; p = pstr(p, " "); ms_name(&p, ms_ht[bi].key); *p++ = '='; p = pint(p, (i64)((u64)best * 1000 / ms_slot_samples[ph][sl])); }
             p = pstr(p, "\r\n"); ms_wr(h, b, p); } }
+    ms_mod_summary(h); ms_gpu_summary(h); gp_summary(h);
     ct_summary(h);
     p = b; p = pstr(p, "\r\nmodules:"); for (int i = 0; i < ms_nmod; i++) { p = pstr(p, " "); p = pstr(p, ms_mod[i].name); *p++ = '@'; p = phex(p, ms_mod[i].base); if (p - b > 3900) { ms_wr(h, b, p); p = b; } }
     p = pstr(p, "\r\n"); ms_wr(h, b, p);
@@ -310,6 +389,7 @@ static DWORD WINAPI ms_thread(void *arg)
       for (int i = 0; i <= n; i++) ct_path[i] = ms_path[i]; wcat(ms_path, L"SeasonMeasure.txt"); wcat(ms_spath, L"SeasonMeasure_stalls.txt"); wcat(ct_path, L"SeasonMeasure_catch.txt"); DeleteFileW(ms_spath); DeleteFileW(ct_path); }
     { void *wm = LoadLibraryW(L"winmm.dll"); if (wm) { u32 (WINAPI *tbp)(u32) = (u32 (WINAPI *)(u32))GetProcAddress(wm, "timeBeginPeriod"); if (tbp) tbp(1); } }
     ms_ntqit = (NTQIT)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationThread");
+    ms_pdh_init();
     { void *k = GetModuleHandleW(L"kernel32.dll"); ct_gpioc = (GPIOC)GetProcAddress(k, "GetProcessIoCounters"); ct_gpmi = (GPMI)GetProcAddress(k, "K32GetProcessMemoryInfo"); }
     i64 qf = 0; QueryPerformanceFrequency(&qf); double qms = 1000.0 / (double)qf;
     ms_t0 = GetTickCount64(); u64 next_refresh = 0, next_write = ms_t0 + 60000, sec_end = ms_t0 + 1000;
@@ -318,14 +398,17 @@ static DWORD WINAPI ms_thread(void *arg)
     for (;;) {
         u64 now = GetTickCount64(); i64 qn; QueryPerformanceCounter(&qn);
         int prog = day_tick_at != 0 && now - day_tick_at < 2500;
-        if (now >= next_refresh && !ct_on) { next_refresh = now + 2000; ms_mods_refresh(); ms_threads_refresh(prog); }
+        if (now >= next_refresh && !ct_on) { next_refresh = now + 2000; ms_mods_refresh(); ms_threads_refresh(prog);
+            { double g = ms_pdh_read(); if (ms_gwin_t0 && g >= 0 && ms_win_frames > 0) { double w = (double)(now - ms_gwin_t0); ms_gbusy[prog] += g / 100.0 * w; ms_gwin[prog] += w; ms_gfr[prog] += ms_win_frames; ms_gn[prog]++; }
+              ms_gwin_t0 = now; ms_win_frames = 0; }
+            gp_tick(); }   /* v26k54: the graphics card's clock: its frame-counter pointer is checked here */
         /* frames */
         float *L = dl_state == 1 ? dl_list(IP_END) : 0;
         if (L) { float fc = L[IP_CTRL * 4];
             if (last_fc < 0 || fc < last_fc || fc - last_fc > 1000) { last_fc = fc; last_fq = qn; }
             else if (fc > last_fc) { int nf = (int)(fc - last_fc + 0.5f); if (nf < 1) nf = 1; double ms = (double)(qn - last_fq) * qms / nf;
                 if (ct_on) ct_end((double)(qn - last_fq) * qms);
-                if (game_in_front()) for (int i = 0; i < nf; i++) { ms_frame(ms, prog); sec_frames++; if (ms > sec_max) sec_max = (float)ms; }
+                { int fr = game_in_front(); for (int i = 0; i < nf; i++) { ms_frame(ms, prog); if (fr) ms_front_frames[prog]++; sec_frames++; if (ms > sec_max) sec_max = (float)ms; } ms_win_frames += nf; }   /* v26k54: all frames (the game can run behind another window) */
                 last_fc = fc; last_fq = qn; } }
         if (L && !ct_on && last_fc >= 0 && (double)(qn - last_fq) * qms > 40.0 && game_in_front()) ct_begin(prog);
         if (ct_on && (!L || !game_in_front())) ct_on = 0;
@@ -345,6 +428,12 @@ static DWORD WINAPI ms_thread(void *arg)
             for (int i = 0; i < ns && nc < 12; i++) { u64 v = stk[i]; if (v < 0x10000 || !ms_is_ret(v)) continue; int m2; u64 f = ms_func(v - 1, &m2); int d = 0; for (int q = 0; q < nc; q++) if (chain[q] == f) d = 1; if (!d) chain[nc++] = f; }
             int ci = prog * 8 + sl * 2; MSENT *e = ms_get(f0); if (e) e->c[ci]++;
             for (int q = 0; q < nc; q++) { MSENT *e2 = ms_get(chain[q]); if (e2) e2->c[ci + 1]++; }
+            { int wait = mi >= 0 && ms_readable_in(&ms_mod[mi], rip - 2, 2) && ((const u8 *)rip)[-2] == 0x0F && ((const u8 *)rip)[-1] == 0x05;   /* v26k54: right after a syscall = waiting */
+              if (wait) ms_wait[prog][sl]++;
+              MSMST *me0 = ms_mstat(mi); if (me0) me0->ex[prog][sl]++;
+              int seen[13]; int ns2 = 0; seen[ns2++] = mi;
+              for (int q = 1; q < nc; q++) { int m3 = ms_find_mod(chain[q] & ~1ULL); int d = 0; for (int z = 0; z < ns2; z++) if (seen[z] == m3) d = 1; if (!d && ns2 < 13) seen[ns2++] = m3; }
+              for (int z = 0; z < ns2; z++) { MSMST *mz = ms_mstat(seen[z]); if (mz) mz->in[prog][sl]++; } }
             if (sl < 2) { sec_samples[sl]++; sec_add(sl, f0, 1); for (int q = 0; q < nc; q++) sec_add(sl, chain[q], 0); } }
         ms_ticks++;
         if (now >= sec_end) { sec_end = now + 1000;

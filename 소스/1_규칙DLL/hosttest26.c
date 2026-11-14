@@ -146,6 +146,21 @@ static void tile_show(int c,const char*what){ typedef void (GAMEABI *FL)(void*);
     printf("    line box %d at %d,%d %dx%d size %.2f/%.2f colour %08x way %d parent %s: \"%s\"  (est %d of %d)\n",i-13,r.l,r.t,r.w,r.h,*(float*)(s+0x10),*(float*)(s+0x14),*(u32*)s,mock_way(*(u8**)(nd+0x248)),*(u8**)(nd+0xd0)==mn[0].b?"root":"OTHER",q,ti_est(mtxt[i]),272); }
   int ids[4]={0xe,0xf,1,2}; for(int k=0;k<4;k++){ TIRect r=ti_rect(mn[ids[k]].b); printf("    box %d: left %d top %d w %d h %d\n",ids[k],r.l,r.t,r.w,r.h);} }
 static int GAMEABI mock_rc(int base,int flag,void*cell,void*unit,void*a5,void*a6,void*a7){(void)flag;(void)cell;(void)unit;(void)a5;(void)a6;(void)a7;return base;}
+static int GAMEABI fake_rc(int base, int flag, void *cell, void *unit, void *a5, void *a6, void *a7) { (void)flag; (void)cell; (void)unit; (void)a5; (void)a6; (void)a7; return base; }
+static volatile int gt_run, gt_active; static volatile long gt_checks, gt_bad, gt_overlap;
+static void *gt_writer(void *arg) { long k = (long)arg; unsigned r = 12345u * (unsigned)k;
+  while (gt_run) { r = r * 1103515245u + 12345u; int t = (r >> 16) & 1;
+    if (t) { rcg_begin(); tg_begin(); } else rcg_begin();
+    int a = __sync_add_and_fetch(&gt_active, 1); if (a > 1) __sync_fetch_and_add(&gt_overlap, 1);
+    for (volatile int i = 0; i < (int)((r >> 8) & 255); i++) { }
+    __sync_sub_and_fetch(&gt_active, 1);
+    if (t) { tg_end(); rcg_end(); } else rcg_end();
+    for (volatile int i = 0; i < (int)((r >> 4) & 127); i++) { } }
+  return 0; }
+static void *gt_checker(void *arg) { (void)arg;
+  while (gt_run) { int g1 = SeasonRules_RouteCostGen; __sync_synchronize(); int a = gt_active; __sync_synchronize(); int g2 = SeasonRules_RouteCostGen;
+    gt_checks++; if (g1 == g2 && !(g1 & 1) && a) gt_bad++; }
+  return 0; }
 int main(int argc,char**argv){ setvbuf(stdout,0,_IONBF,0);
  int test=argc>1 && atoi(argv[1])!=0;
  use_version(getenv("HOSTVER")?atoi(getenv("HOSTVER")):0); printf("host test table: %s\n", gver->name);
@@ -291,6 +306,26 @@ int main(int argc,char**argv){ setvbuf(stdout,0,_IONBF,0);
  { printf("grid %.1f %.4f %.1f %.1f\n",ini_list[IP_GRID*4],ini_list[IP_GRID*4+1],ini_list[IP_GRID*4+2],ini_list[IP_GRID*4+3]); int bad=0,nr=0,ns=0,nc=0;
    for(int c=0;c<48400;c++){ unsigned v=(unsigned)ini_list[IP_WX*4+c/3]; int b=(v>>(8*(c%3)))&255; if(b!=cell_wx(c,cur_turn<0?0:cur_turn))bad++; if(b&3)nr++; if(b&4)ns++; if((b>>3)&3)nc++; }
    printf("wx layer: mismatches %d, rain cells %d, snowing %d, lying snow %d\n",bad,nr,ns,nc); }
+
+ /* ---- v26k54: the map mod's numbers and the step-cost rules ---- */
+ printf("v26k54 numbers: route cost gen %d (writers %d), terrain gen %d (writers %d), unit-only %d, days seen %u\n", SeasonRules_RouteCostGen, rcg_depth, SeasonRules_TerrainGen, tg_depth, SeasonRules_RouteCost_UnitOnly, (unsigned)last_day);
+ printf("v26k54 numbers even at the end: %s\n", (!(SeasonRules_RouteCostGen & 1) && !(SeasonRules_TerrainGen & 1) && !rcg_depth && !tg_depth && SeasonRules_RouteCostGen > 0) ? "ok" : "BAD");
+ { RouteCostFn sv_orig = rc_orig; int sv_ok = rc_ok, sv_off = rc_off, sv_turn = g_turn, sv_st = spd_turn; float sv_m = rc_mul[100];
+   rc_orig = fake_rc; rc_ok = 1; rc_off = 0; u8 *cell = hexes + 100 * 32; void *unit = (void *)hexes; rc_mul[100] = 1.6f; g_turn = 5; spd_turn = 5;
+   int a1 = RouteCost(37, 1, cell, unit, 0, 0, 0), a2 = RouteCost(37, 1, cell, 0, 0, 0, 0), a3 = RouteCost(37, 2, cell, unit, 0, 0, 0), a4 = RouteCost(37, 3, cell, unit, 0, 0, 0);
+   int b1 = rc_scale(37, 1, cell, unit), b2 = rc_scale(37, 1, cell, 0), b3 = rc_scale(37, 2, cell, unit);
+   spd_turn = 4; int c1 = RouteCost(37, 1, cell, unit, 0, 0, 0);
+   g_turn = -1; spd_turn = -1; rc_mul[100] = 0.0f; int d1 = RouteCost(37, 1, cell, unit, 0, 0, 0), d2 = rc_scale(37, 1, cell, unit);
+   int ok = a1 == 59 && a2 == 37 && a3 == 37 && a4 == 59 && b1 == 59 && b2 == 37 && b3 == 37 && c1 == 37 && d1 == 37 && d2 == 37;
+   printf("v26k54 route cost: unit %d no-unit %d bit0-clear %d bits3 %d | mid: unit %d no-unit %d bit0-clear %d | old table %d | no table yet %d %d -> %s\n", a1, a2, a3, a4, b1, b2, b3, c1, d1, d2, ok ? "ok" : "BAD");
+   rc_orig = sv_orig; rc_ok = sv_ok; rc_off = sv_off; g_turn = sv_turn; spd_turn = sv_st; rc_mul[100] = sv_m; }
+ { int g0 = SeasonRules_RouteCostGen; set_rc_off(1); int g1 = SeasonRules_RouteCostGen; set_rc_off(1); int g2 = SeasonRules_RouteCostGen; set_rc_off(0);
+   set_hook_mode(1); int g3 = SeasonRules_RouteCostGen; set_hook_mode(2); int g4 = SeasonRules_RouteCostGen; set_hook_mode(0); int g5 = SeasonRules_RouteCostGen;
+   printf("v26k54 switches: off %d->%d same %d, per-call mode odd %d %d, back %d -> %s\n", g0, g1, g2, g3, g4, g5, (g1 == g0 + 2 && g2 == g1 && (g3 & 1) && g4 == g3 && g5 == g3 + 1 && !(g5 & 1)) ? "ok" : "BAD"); }
+ { /* two writers at once (the day on the game thread, tile edits on ours): while a number is even and unchanged nobody is inside */
+   gt_run = 1; pthread_t w1, w2, ck; pthread_create(&w1, 0, gt_writer, (void *)1); pthread_create(&w2, 0, gt_writer, (void *)2); pthread_create(&ck, 0, gt_checker, 0);
+   usleep(1500000); gt_run = 0; pthread_join(w1, 0); pthread_join(w2, 0); pthread_join(ck, 0);
+   printf("v26k54 two writers: checks %ld, seen inside while even %ld, overlaps %ld, end even %s -> %s\n", gt_checks, gt_bad, gt_overlap, (!(SeasonRules_RouteCostGen & 1) && !(SeasonRules_TerrainGen & 1)) ? "yes" : "no", (!gt_bad && gt_overlap > 0 && gt_checks > 1000 && !(SeasonRules_TerrainGen & 1)) ? "ok" : "BAD"); }
  present_run=0;
  return 0;
 }

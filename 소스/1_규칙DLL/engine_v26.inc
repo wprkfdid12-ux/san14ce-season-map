@@ -985,7 +985,7 @@ static double pf_sum[3][4], pf_gsum[3][4]; static int pf_n[3][4], pf_gn[3][4];  
 static double pf_min_ms[4] = { 1e9, 1e9, 1e9, 1e9 }, pf_max_ms[4];
 static const int PF_ORDER[4][4] = { { 0, 1, 2, 3 }, { 1, 0, 3, 2 }, { 2, 3, 0, 1 }, { 3, 2, 1, 0 } };
 static u64 pf_rc0; static int pf_stall[4];
-static void pf_set(float *L, int way) { if (L) L[98 * 4 + 2] = (float)(way & 1); rc_off = 0; pf_rc0 = rc_calls; }
+static void pf_set(float *L, int way) { if (L) L[98 * 4 + 2] = (float)(way & 1); set_rc_off(0); pf_rc0 = rc_calls; }
 static char *pdec(char *q, double v, int scale) { if (v < 0) return pstr(q, "?"); return pint(q, (int)(v * scale + 0.5)); }
 static void perf_summary(void)
 {
@@ -1061,7 +1061,7 @@ static void diag_tick(void)
     u64 now = GetTickCount64(); if (prev && game_in_front()) front_ms += now - prev; prev = now;
     if (!next) { next = now + 5000; t_start = now; last_fc = L[IP_CTRL * 4]; last_calls = sp_calls; last_samp = sp_samp; last_tot = sp_tot; last_orig = sp_orig; last_fr = fr_calls; last_day_tick = day_tick_at;
         logs("diag: frame timing every 5 s, with our own time-step work; GPU time per shader is in SeasonSync_log.txt"); return; }
-    hook_mode = 0; (void)done; (void)t_start;
+    set_hook_mode(0); (void)done; (void)t_start;
     /* v26k28c: (1) the graphics tool's frame record (F8, call list only) once standing still and twice on the march;
        (2) its own cost monitor (Ctrl+F9 on, Shift+F9 = freeze and write to its log, Ctrl+F9 off) on the march;
        (3) then, on the march, 5-second windows take turns: way 0 (the season map) / way 2 (the game's own pictures, season

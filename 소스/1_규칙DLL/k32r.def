@@ -31,3 +31,16 @@ ReadProcessMemory
  GetModuleHandleExW
 LoadLibraryW
 GetProcAddress
+  CreateToolhelp32Snapshot
+  GetCurrentThread
+  GetThreadContext
+  GetThreadTimes
+  Module32FirstW
+  Module32NextW
+  OpenThread
+  ResumeThread
+  SetThreadPriority
+  SuspendThread
+  Thread32First
+  Thread32Next
+  GetSystemDirectoryW

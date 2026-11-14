@@ -132,6 +132,29 @@ static const GameVer *gver;
 static const S14_CoreAPI *api; static u8 *game; static void *self_module;
 static u8 **dbp(void) { return (u8 **)(game + RVA_GAMEDB); }
 
+/* ---- v26k54: three names for the map mod (맵 확장), asked for by it; nobody reads them without it.
+   SeasonRules_RouteCost_UnitOnly: a promise - our step-cost hooks never change the cost of a search without a unit (unit NULL or
+       flag bit 0 clear); the game's own function returns the cost it was given in those cases, and so do we.
+   SeasonRules_RouteCostGen: +1 right before anything our step-cost answers depend on changes (the day's table, the turn, the cells'
+       terrain, the hooks' switches), +1 right after - odd = changing, even and unchanged = the same (cell, unit, flag) gets the same answer.
+   SeasonRules_TerrainGen: the same, only around real writes of a cell's terrain type (cell +0x10); untouched on a day nothing is retyped.
+   Two threads can change things at once (the game thread's day, our background thread's tile edits), so the writers are counted:
+   the number goes odd when the first starts and even when the last one ends. ---- */
+EXPORT volatile int SeasonRules_RouteCostGen;
+EXPORT volatile int SeasonRules_TerrainGen;
+EXPORT const int SeasonRules_RouteCost_UnitOnly = 1;
+static volatile int gen_lk; static int rcg_depth, tg_depth;
+static void gen_lock(void) { while (__sync_lock_test_and_set(&gen_lk, 1)) while (gen_lk) { } }
+static void gen_unlock(void) { __sync_lock_release(&gen_lk); }
+static void rcg_begin(void) { gen_lock(); if (rcg_depth++ == 0) __sync_fetch_and_add(&SeasonRules_RouteCostGen, 1); gen_unlock(); }
+static void rcg_end(void) { gen_lock(); if (rcg_depth > 0 && --rcg_depth == 0) __sync_fetch_and_add(&SeasonRules_RouteCostGen, 1); gen_unlock(); }
+static void tg_begin(void) { gen_lock(); if (tg_depth++ == 0) __sync_fetch_and_add(&SeasonRules_TerrainGen, 1); gen_unlock(); }
+static void tg_end(void) { gen_lock(); if (tg_depth > 0 && --tg_depth == 0) __sync_fetch_and_add(&SeasonRules_TerrainGen, 1); gen_unlock(); }
+/* the game thread's day (on_time) retypes cells only through this: the first real change opens both numbers, the day's end closes them */
+static int day_tg_open;
+static void cell_retype(u8 *h, u8 v) { if (h[0x10] == v) return; if (!day_tg_open) { day_tg_open = 1; rcg_begin(); tg_begin(); } h[0x10] = v; }
+static void day_tg_close(void) { if (day_tg_open) { day_tg_open = 0; tg_end(); rcg_end(); } }
+
 /* ---- small helpers ---- */
 static u16 logpath[600], datpath[600];
 static void wcat(u16 *d, const u16 *s) { while (*d) d++; while (*s) *d++ = *s++; *d = 0; }
@@ -315,8 +338,9 @@ static void te_load(void)
 static void te_apply(void)                  /* any thread: one byte per edited cell, only while it still holds the old type */
 {
     if (!te_n) return; u8 **pp = dbp(); if (!readable(pp, 8)) return; u8 *d = *pp; if (!d || !readable(d + DB_HEX, 8 * (u64)NCELL)) return;
-    int n = 0; for (int i = 0; i < te_n; i++) { u8 *h = *(u8 **)(d + DB_HEX + 8 * (u64)te_cell[i]); if (!readable(h, 0x20)) continue;
-        if (h[0x10] == te_from[i]) { h[0x10] = te_to[i]; n++; } }
+    int n = 0, open = 0; for (int i = 0; i < te_n; i++) { u8 *h = *(u8 **)(d + DB_HEX + 8 * (u64)te_cell[i]); if (!readable(h, 0x20)) continue;
+        if (h[0x10] == te_from[i]) { if (!open) { open = 1; rcg_begin(); tg_begin(); } h[0x10] = te_to[i]; n++; } }   /* v26k54: any thread - its own section */
+    if (open) { tg_end(); rcg_end(); }
     if (n && (d != te_done_db || n != te_done_n)) { te_done_db = d; te_done_n = n; char m[80], *p = m; p = pstr(p, "tile edits: "); p = pint(p, n); p = pstr(p, " game cells set to the new type"); *p = 0; logs(m); }
 }
 static u8 *army_ok[501];                  /* army pointers already verified (re-verified when the slot changes) */
@@ -544,15 +568,19 @@ static float spd_cell(int c, int t) { float f = spd_cell_nr(c, t); if (rain[c] >
    blocked by it - only dearer. */
 static float rc_mul[NCELL];
 static volatile int rc_ok, rc_off, rg_ok;                  /* rc_off: the 'off' way of the test build's A/B (the old weighing) */
+static void set_rc_off(int v) { if (v == rc_off) return; rcg_begin(); rc_off = v; rcg_end(); }   /* v26k54: test builds only */
+static void set_hook_mode(int m) { if (m == hook_mode) return; int was = hook_mode; if (!was) rcg_begin(); hook_mode = m; if (!m) rcg_end(); (void)was; }   /* not 0 = worked out per call: odd while it lasts */
 static volatile u64 rc_calls, rc_mulled;
 static u8 *rc_ret;
 static void spd_build(void)                        /* after each day's rules (game thread): the table for this turn */
 {
-    int t = g_turn; if (t < 0 || !dat) { spd_turn = -1; return; }
+    rcg_begin();                                   /* v26k54: the table changes - the map mod's number is odd until it is whole again */
+    int t = g_turn; if (t < 0 || !dat) { spd_turn = -1; rcg_end(); return; }
     spd_turn = -1; __sync_synchronize();
     for (int c = 0; c < NCELL; c++) { float fn = spd_cell_nr(c, t), f = fn; u8 rt = rain[c]; if (rt >= 2) f *= spd_rain(c); spd_fac[c] = f;
         float m = rt >= 3 ? 1.6f : rt == 2 ? 1.3f : 1.0f; float q = fn < 1.0f ? m / fn : m; rc_mul[c] = q > 4.0f ? 4.0f : q; }   /* v26k38c: at most x4 */
     __sync_synchronize(); spd_turn = t;
+    rcg_end();
 }
 static float speed_apply(void *a, void *cell, float s)
 {
@@ -594,7 +622,7 @@ static int GAMEABI RouteCost(int base, int flag, void *cell, void *unit, void *a
     void *b5 = *(void *volatile *)&a5, *b6 = *(void *volatile *)&a6, *b7 = *(void *volatile *)&a7;
     int r = rc_orig(base, flag, cell, unit, b5, b6, b7);
     rc_calls++;
-    if (!rc_ok || rc_off || !cell || r <= 0 || spd_turn != g_turn) return r;
+    if (!rc_ok || rc_off || !cell || !unit || !(flag & 1) || r <= 0 || spd_turn < 0 || spd_turn != g_turn) return r;   /* v26k54: no unit / bit 0 clear = the game's own cost (as the game's function); no table yet = the game's own */
     u8 *d = *dbp(); if (!d) return r; u8 *h0 = *(u8 **)(d + DB_HEX); if (!h0) return r;
     i64 o = (u8 *)cell - h0; if (o < 0 || o >= (i64)NCELL * 32 || (o & 31)) return r;
     float m = rc_mul[o >> 5]; if (m == 1.0f) return r;
@@ -606,7 +634,7 @@ static int GAMEABI RouteCost(int base, int flag, void *cell, void *unit, void *a
 static int GAMEABI rc_scale(int base, int flag, void *cell, void *unit)
 {
     rc_calls++;
-    if (!rc_ok || rc_off || !cell || !unit || !(flag & 1) || base <= 0 || spd_turn != g_turn) return base;
+    if (!rc_ok || rc_off || !cell || !unit || !(flag & 1) || base <= 0 || spd_turn < 0 || spd_turn != g_turn) return base;
     u8 *d = *dbp(); if (!d) return base; u8 *h0 = *(u8 **)(d + DB_HEX); if (!h0) return base;
     i64 o = (u8 *)cell - h0; if (o < 0 || o >= (i64)NCELL * 32 || (o & 31)) return base;
     float m = rc_mul[o >> 5]; if (m == 1.0f) return base;
@@ -624,14 +652,14 @@ static void rivers(u8 *d, int t)
         int c = fcells[k]; u8 *h = cellp(d, c); if (!h) continue;
         u8 cur = h[0x10]; int want = (v2 && cur_turn == t) ? frz_cur(c) : frozen_wanted(t, c);
         if (want) {
-            if (cur == T_GREATRIVER && !occ[c]) { h[0x10] = T_RIVER; mine[c] = 1; froze++; }
+            if (cur == T_GREATRIVER && !occ[c]) { cell_retype(h, T_RIVER); mine[c] = 1; froze++; }
             else if (cur == T_RIVER) mine[c] = 1;
         } else if (cur == T_RIVER && vterr[c] == T_GREATRIVER) {
             if (occ[c]) {                                       /* army on the ice: keep the ice until it leaves */
                 held++;
                 u8 *a = army(d, occ[c]);
                 if (a && thaw_year[occ[c]] != g_year) { thaw_year[occ[c]] = g_year; if (chance(2500)) hurt(a, 15, 15, "thaw"); }
-            } else { h[0x10] = T_GREATRIVER; mine[c] = 0; thawed++; }
+            } else { cell_retype(h, T_GREATRIVER); mine[c] = 0; thawed++; }
         }
     }
     if (froze || thawed || held) { char b[120], *p = b; p = pstr(p, "rivers turn "); p = pint(p, t); p = pstr(p, ": froze "); p = pint(p, froze);
@@ -913,7 +941,7 @@ static void slide_at(u8 *d, Event *e, int c, int season)
 {
     u8 *h = cellp(d, c); if (!h) return;
     if (occ[c]) { u8 *a = army(d, occ[c]); if (a && chance(5000)) hurt(a, 20, 20, "landslide"); return; }   /* the army is not blocked */
-    if (e->ncells < 8 && h[0x10] != T_BLOCKED) { e->cells[e->ncells] = (u16)c; e->saved[e->ncells] = h[0x10]; e->ncells++; h[0x10] = T_BLOCKED; mine[c] = 2; vis_add(3, c, g_turn < 0 ? 0 : g_turn, 0); }
+    if (e->ncells < 8 && h[0x10] != T_BLOCKED) { e->cells[e->ncells] = (u16)c; e->saved[e->ncells] = h[0x10]; e->ncells++; cell_retype(h, T_BLOCKED); mine[c] = 2; vis_add(3, c, g_turn < 0 ? 0 : g_turn, 0); }
     (void)season;
 }
 static void start_event0(u8 *d, Event *e, int t)
@@ -1081,7 +1109,7 @@ static void end_event(u8 *d, Event *e)
     if (e->type == EV_FIRE) for (int j = 0; j < e->ncells; j++) burning[e->cells[j]] = 0;
     if (e->type == EV_FLOOD) for (int c = 0; c < NCELL; c++) if ((floodz[c] >> 4) == e->region) flooded[c] = 0;
     if (e->type == EV_SLIDE) for (int j = 0; j < e->ncells; j++) { int c = e->cells[j]; u8 *h = cellp(d, c);
-        if (h && h[0x10] == T_BLOCKED && mine[c] == 2) { h[0x10] = e->saved[j]; mine[c] = 0; } }
+        if (h && h[0x10] == T_BLOCKED && mine[c] == 2) { cell_retype(h, e->saved[j]); mine[c] = 0; } }
     e->active = 0; e->type = 0;
     logs("event ended");
 }
@@ -1668,6 +1696,7 @@ static void on_time(void)
     int fresh = last_day == 0 || day < last_day || day > last_day + 40;
     last_day = day;
     int month = date[0x36], dd = date[0x37]; if (month < 1 || month > 12) return;
+    rcg_begin();                               /* v26k54: the whole day (rivers, disasters, weather, the turn, the table) is one change for the map mod */
     int t = (month - 1) * 3 + (dd <= 10 ? 0 : dd <= 20 ? 1 : 2);
     /* v25.9d: a new ten-day period is entered on the LAST day of the old one. On the first day of a period the game rebuilds
        its log and stops for the new turn, and a line added on that very day only showed up a turn later. One day early,
@@ -1693,7 +1722,7 @@ static void on_time(void)
         if (v2) engine_reset();
         last_turn_seen = 0xffffffff; sess_days = 1;
         for (int c = 0; c < NCELL; c++) {      /* a cell we blocked must never stay blocked across loads */
-            if (vterr[c] == T_BLOCKED) continue; u8 *h = cellp(d, c); if (h && h[0x10] == T_BLOCKED) { h[0x10] = vterr[c]; mine[c] = 0; } }
+            if (vterr[c] == T_BLOCKED) continue; u8 *h = cellp(d, c); if (h && h[0x10] == T_BLOCKED) { cell_retype(h, vterr[c]); mine[c] = 0; } }
         te_apply();                            /* v26k42: the retyped cells, right away after a load */
         char b[80], *p = b; p = pstr(p, "game date "); p = pint(p, g_year); *p++ = '/'; p = pint(p, month); *p++ = '/'; p = pint(p, dd); p = pstr(p, " (new session)"); *p = 0; logs(b);
 #ifdef SEASON_TEST
@@ -1745,6 +1774,7 @@ static void on_time(void)
     hold_day = held ? day : 0;
     if (npend && !held) { TB(t_fl); flush_reports(1); TE(t_fl, "news lines out (all of the day)", 1); }               /* v25.9b: the day's reports go out at once, on the day the disaster happens
                                                   (the game may stop at a new turn; waiting for the pictures held them a whole turn) */
+    day_tg_close(); rcg_end();                 /* v26k54: both numbers even again (a load included: its reverts and re-applied tile edits are in here) */
 }
 typedef int (GAMEABI *TimeFn)(void);
 static TimeFn time_orig;          /* v26k38a: the game's time step - its own entry (call-site hook) or our copy of its start (entry hook) */
@@ -1952,6 +1982,7 @@ static int install_routeguard(void)
 #endif
 #ifdef SEASON_MEASURE
 #include "measure_v26.inc"
+#include "gpuprof_v26.inc"
 #endif
 /* v26k18: which game version is running (its build stamp in the exe header); an unknown one = nothing is changed */
 static int mod_inited;
@@ -2007,6 +2038,7 @@ EXPORT u32 GAMEABI SAN14_ModInitV1(const S14_CoreAPI *a)
         datpath[0] = 0; wcat(datpath, p); wcat(datpath, L"SeasonRules.dat");
     }
     logs("SeasonRules 1 starting");
+    logs("v26k54: route cost - searches without a unit keep the game's own cost; change numbers for the map mod given out (RouteCostGen, TerrainGen)");
 #if defined(SEASON_TEST) && !defined(HOSTTEST)
     sr_crash_catcher();
 #endif
@@ -2039,8 +2071,10 @@ EXPORT u32 GAMEABI SAN14_ModInitV1(const S14_CoreAPI *a)
         p = sr_where(p, spd_chained_to);
 #endif
         p = pstr(p, ") - the season slow-down is put in front of it (both apply)"); *p = 0; logs(b); }
+    rcg_begin();                                /* v26k54: the hooks start answering - one change for the map mod */
     rc_ok = gv_off ? install_routecost() : 0;   /* v26k38c: the route step cost per cell - the official exe only */
     if (!rc_ok && gv_off && install_routecost_mid()) rc_ok = 2;
+    rcg_end();
     logs(rc_ok == 1 ? "route cost: installed at the step-cost function's start (each cell weighed by its weather / disaster; rain x1.3, downpour x1.6, at most x4) - the integrated patch's own wrapper of the call is left as it is"
        : rc_ok == 2 ? "route cost: the function's start is taken by another mod - installed a few bytes in instead (the same weights)"
                     : "route cost: SKIPPED (another game version or both places taken) - the old weighing");
@@ -2075,6 +2109,7 @@ EXPORT u32 GAMEABI SAN14_ModInitV1(const S14_CoreAPI *a)
         *p = 0; logs(c); if (bad) start_notice(c);
     }
 #ifdef SEASON_MEASURE
+    gp_hook_seasonsync();                       /* v26k54: before SeasonSync goes on to create the device */
     measure_start();
 #endif
     mod_inited = 1;
