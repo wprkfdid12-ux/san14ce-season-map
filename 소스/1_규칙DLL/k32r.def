@@ -44,3 +44,4 @@ GetProcAddress
   Thread32First
   Thread32Next
   GetSystemDirectoryW
+  GetPrivateProfileIntW

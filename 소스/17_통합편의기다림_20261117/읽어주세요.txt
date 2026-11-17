@@ -1,0 +1,40 @@
+v26k55 (2026-11-17) — 통합패치(통합편의) 시작 확인이 끝난 뒤 게임 코드 후크 걸기 (제보 P262)
+
+[증상]
+통합패치 + 2D + 계절 맵만 쓰는 PC 에서 통합패치 5번(수행·대열 이동)·6번(진행 배속)이 꺼진 채 시작.
+통합편의(SAN14_IntegratedConvenience.dll)는 시작할 때 게임 코드를 원래 바이트와 비교하고 다르면 그 기능을 켜지 않음.
+누가 먼저 걸리느냐가 PC 마다 달라서 어떤 PC 에서만 생김.
+
+[원인 — 통합편의 실제 확인표와 우리 후크 자리 대조 (새 판 exe 2026-11-05)]
+- 날짜 후크 호출 자리 0x44e7d0 → 6번 진행 배속 준비 0번(0x44dee0 + 2500) 안 → 6번 실패
+- 길찾기 가속(v26k36) 점프 4곳 0x185041·0x185528·0x185558·0x1855c8 → 전역 확인 101번(0x184d60 + 2466) 한가운데 → 5번 실패
+- 눈 이동속도(0x2b2550, 전역 105번 맨 앞)·길 비용(0x187880, 전역 104번 맨 앞)·길찾기 입구(0x184d60) 는 구간 맨 앞 점프라 통과
+- 길 튕김 막기·화계·땅 정보창은 통합편의 확인표 밖. 통합패치 다른 모듈이 고치는 자리와도 겹침 없음
+
+[고침 — 1_규칙DLL/season_rules_v26.c]
+- 시작(SAN14_ModInitV1)에서 게임 코드 후크 부분을 install_hooks() 로 떼어 냄(내용은 그대로).
+- 통합편의가 깔려 있으면(이미 실려 있음, 또는 게임 폴더에 DLL + SAN14Mods\modules\IntegratedConvenience_GreenlandCompat.ini 의 Enabled=1
+  — 통합패치 자기 모듈 ic_after_restore.h 와 같은 판단) 우리 스레드에서 기다렸다가 건다(게임 시작은 안 막음):
+  통합편의가 실릴 때까지 최대 2분 → SAN14_WaitConvenienceV1() 이 0 이 아니면(시작 확인 끝) 바로 → 4분 안에 안 끝나도 그냥 건다.
+  통합편의가 없거나 꺼져 있으면 예전처럼 바로 건다.
+- 걸 때 이미 캠페인이 돌고 있으면(날짜 읽힘) 자리마다 다른 게임 스레드를 잠깐 멈추고 쓴다(sh_install):
+  스레드 목록을 먼저 열고 → 전부 멈춤 → 고칠 바이트 한가운데 멈춘 스레드가 있으면 풀고 1ms 뒤 다시(최대 200번)
+  → 멈춘 동안에는 페이지 보호·바이트 쓰기만(기록·잠금 있는 메모리 확인 안 함) → 풀기 → 기록.
+  평소(타이틀 전에 걸림)에는 예전과 똑같이 그냥 쓴다.
+- 새로 쓰는 kernel32 함수: GetPrivateProfileIntW, GetProcAddress, CreateToolhelp32Snapshot, Thread32First/Next, OpenThread,
+  SuspendThread, ResumeThread, GetThreadContext (k32r.def 에 GetPrivateProfileIntW 추가).
+
+[시험 — 이 폴더]
+- peload55.c: 진짜 규칙 DLL 을 리눅스에서 진짜 게임 exe 위에 올려 SAN14_SeasonSelfHost 로 켬(8_새판대응의 peload 확장).
+  더한 것: 시간 빨리 감기(FAST), 가짜 통합편의(ic / icnoload / icnoready / icnoexport / icoff), 통합편의 시작 확인 흉내
+  (ic_ranges.tsv = 통합편의 실제 확인표: 6번 표, 전역 표, 원본 확인 2,346곳 — 원래 바이트면 통과, 전역 표는 맨 앞 점프+nop 도 통과),
+  캠페인 도는 중 흉내(HOLD=1 세 번 고칠 자리 안에 멈춘 스레드, HOLD=2 계속 안에 있음).
+  gcc -O1 -w -o peload55 peload55.c -lpthread
+  ICRANGES=ic_ranges.tsv FAST=50 WAIT=2 ./run.sh <이름> <규칙 DLL> <해제본 exe> [ic|icnoload|icnoready|icnoexport|icoff] [r43] [ai]
+- 결과 (2026-11-17):
+  · v26k54 + 통합편의: 6번 표 1곳·전역 101번 실패 → "feature 6 OFF"(5번도 꺼짐) — 제보 재현
+  · v26k55 + 통합편의: 시작이 돌아올 때 게임 바이트 0곳 바뀜, 통합편의 확인 전부 통과 → 그 뒤 후크 13곳(SM52 T1 I1 S1 F1 R1 G1 n5)
+  · v26k55 의 최종 바이트는 v26k54 와 같음: 통합편의 없음/있음/안 실림/안 끝남/이름 없음/꺼짐/통합패치 흉내/AI 모드 흉내/1.0.1 exe
+  · 캠페인 중: 10번 멈춤 = 7번 설치 + 날짜 자리 3번 다시, 멈춤/풀기 수 같음, 다른 프로세스·자기 스레드는 안 건드림
+  · 계속 안에 있으면: 날짜 호출 자리는 건너뛰고 날짜 함수 입구 후크로 대신(SM52 T2), 알림 창 없음
+- hosttest26.c (HOSTVER=0/1/2): v26k54 와 결과 같음(시간에 따라 변하는 숫자 줄만 다름)

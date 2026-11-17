@@ -1999,7 +1999,7 @@ static void use_version(int i)
    holds their place. Shown from its own thread, so the game goes on starting meanwhile. Never shown when everything is on. */
 #ifndef HOSTTEST
 static u16 sn_text[1400];
-static DWORD WINAPI sn_thread(void *p) { (void)p; MessageBoxW(0, sn_text, L"계절 맵 v26k52", 0x30 | 0x10000 | 0x40000); return 0; }
+static DWORD WINAPI sn_thread(void *p) { (void)p; MessageBoxW(0, sn_text, L"계절 맵 v26k55", 0x30 | 0x10000 | 0x40000); return 0; }
 static void start_notice(const char *code)
 {
     u16 *w = sn_text; const u16 *head = L"계절 맵의 일부 기능이 꺼진 채로 시작했습니다.\r\n(다른 모드가 같은 자리를 쓰고 있거나, 게임 판이 다르거나, 설치가 덜 된 경우)\r\n계절 그림은 그대로 나옵니다.\r\n\r\n아래 한 줄을 그대로 댓글로 알려 주세요 (이 창에서 Ctrl+C 를 누르면 복사됩니다):\r\n\r\n";
@@ -2025,6 +2025,97 @@ static int pick_version(void)
     return 0;
 #endif
 }
+/* ---- v26k55 (report P262: integrated patch + 2D + season map; features 5/6 off on one PC, never on another) ----
+   통합편의 (SAN14_IntegratedConvenience.dll) compares game code with the original bytes at its start - its progress-speed list
+   (feature 6: 0x44dee0 + 2500 bytes) and its global list (feature 5: unit actions / formation moves) - and leaves those features off
+   where a place differs. Our time hook (call site 0x44e7d0) sits in the feature-6 list, and the route search speed-up's four jumps
+   sit in the middle of global place 101 (0x184d60 + 2466); the other hooks are at the very start of a place (a jump there is let
+   through) or outside its lists. Which of the two started first depends on the PC. So when 통합편의 is installed every game-code
+   hook is put in after it says its start is done (SAN14_WaitConvenienceV1 != 0), the way the integrated patch's own modules wait
+   for it, from a thread of our own (the game starts on meanwhile). Not installed / switched off: at once, as before. It does not
+   load within 2 minutes, or is not done within 4 (its own check gives up after 3): put in anyway - the season never stays off.
+   It is normally done before the title screen, long before a campaign's first day. If a campaign is already running when the
+   hooks go in, each place is written with the game's other threads held for that moment (no thread is left halfway through the
+   bytes being changed); the season then goes on from that day as after loading a save. */
+static u32 install_hooks(void);
+static int hk_pause;                            /* 1 = sh_install holds the game's other threads while it writes */
+#ifndef HOSTTEST
+IMP u32 WINAPI GetPrivateProfileIntW(const u16 *, const u16 *, int, const u16 *);
+IMP void *WINAPI GetProcAddress(void *, const char *);
+#ifndef SEASON_MEASURE                         /* the measure build declares these itself (measure_v26.inc) */
+IMP HANDLE WINAPI CreateToolhelp32Snapshot(DWORD, DWORD);
+typedef struct { DWORD dwSize, cntUsage, th32ThreadID, th32OwnerProcessID; long tpBasePri, tpDeltaPri; DWORD dwFlags; } THREADENTRY32;   /* 28 bytes */
+IMP BOOL WINAPI Thread32First(HANDLE, THREADENTRY32 *);
+IMP BOOL WINAPI Thread32Next(HANDLE, THREADENTRY32 *);
+IMP HANDLE WINAPI OpenThread(DWORD, BOOL, DWORD);
+IMP DWORD WINAPI SuspendThread(HANDLE);
+IMP DWORD WINAPI ResumeThread(HANDLE);
+IMP BOOL WINAPI GetThreadContext(HANDLE, void *);
+#endif
+static const u16 IC_DLL[] = L"SAN14_IntegratedConvenience.dll";
+/* installed and switched on: loaded already, or its DLL in the game folder with its loader entry (Enabled=1) - as the integrated
+   patch's own modules decide it (ic_after_restore.h) */
+static int ic_present(void)
+{
+    if (GetModuleHandleW(IC_DLL)) return 1;
+    u16 r[600]; DWORD n = GetModuleFileNameW(0, r, 560); if (!n || n >= 560) return 0;
+    while (n && r[n - 1] != '\\' && r[n - 1] != '/') n--; r[n] = 0;
+    u16 f[700]; f[0] = 0; wcat(f, r); wcat(f, IC_DLL); if (GetFileAttributesW(f) == 0xFFFFFFFFu) return 0;
+    f[0] = 0; wcat(f, r); wcat(f, L"SAN14Mods\\modules\\IntegratedConvenience_GreenlandCompat.ini"); if (GetFileAttributesW(f) == 0xFFFFFFFFu) return 0;
+    return GetPrivateProfileIntW(L"Mod", L"Enabled", 1, f) != 0;
+}
+static int campaign_on(void) { u8 *d = db(); if (!d) return 0; u8 *date = *(u8 **)(d + DB_DATE); return readable(date, 0x460) && date[0x36] >= 1 && date[0x36] <= 12; }
+static DWORD WINAPI ic_wait_thread(void *arg)
+{
+    (void)arg; u64 t0 = GetTickCount64(); const char *how = "it did not load within 2 minutes - put in anyway"; void *ic = 0;
+    while (!(ic = GetModuleHandleW(IC_DLL)) && GetTickCount64() - t0 < 120000) Sleep(250);
+    if (ic) {
+        typedef u32 (*IcWaitFn)(void);
+        IcWaitFn w = (IcWaitFn)GetProcAddress(ic, "SAN14_WaitConvenienceV1");
+        if (!w) how = "it has no start-done signal (another version) - put in now";
+        else { how = "its start was not done within 4 minutes - put in anyway"; u64 t1 = GetTickCount64();
+            for (;;) { if (w()) { how = "its start check is done"; break; } if (GetTickCount64() - t1 >= 240000) break; Sleep(250); } }   /* it waits up to 15 s itself */
+    }
+    int camp = campaign_on();
+    { char b[300], *p = b; p = pstr(p, "v26k55: game-code hooks now - 통합편의: "); p = pstr(p, how); p = pstr(p, " (waited "); p = pint(p, (i64)(GetTickCount64() - t0)); p = pstr(p, " ms)");
+      if (camp) p = pstr(p, "; a campaign is already running - each place written with the game's other threads held, the season goes on from today as after loading a save");
+      *p = 0; logs(b); }
+    hk_pause = camp;
+    install_hooks();
+    hk_pause = 0;
+    return 0;
+}
+/* hold every other thread of the game (none of them left inside the bytes about to change), or 0 = could not (written as before) */
+static HANDLE hk_th[1024]; static int hk_nth; static u8 hk_ctx[0x4d0] __attribute__((aligned(16)));   /* CONTEXT: flags +0x30, Rip +0xf8 */
+static void hk_release(void) { for (int k = 0; k < hk_nth; k++) { ResumeThread(hk_th[k]); CloseHandle(hk_th[k]); } hk_nth = 0; }
+static int hk_hold(const S14_Hook *h, u32 n)
+{
+    DWORD me = GetCurrentThreadId(), pid = GetCurrentProcessId();
+    for (int tries = 0; tries < 200; tries++) {
+        HANDLE s = CreateToolhelp32Snapshot(4, 0); if (!s || s == (HANDLE)(i64)-1) return 0;   /* TH32CS_SNAPTHREAD */
+        THREADENTRY32 e; e.dwSize = sizeof(e); hk_nth = 0; int over = 0;
+        if (Thread32First(s, &e)) do {
+            if (e.dwSize >= 16 && e.th32OwnerProcessID == pid && e.th32ThreadID != me) { if (hk_nth >= 1024) { over = 1; break; }
+                HANDLE t = OpenThread(0x0002 | 0x0008, 0, e.th32ThreadID); if (t) hk_th[hk_nth++] = t; }   /* SUSPEND_RESUME | GET_CONTEXT */
+            e.dwSize = sizeof(e); } while (Thread32Next(s, &e));
+        CloseHandle(s);
+        if (over) { for (int k = 0; k < hk_nth; k++) CloseHandle(hk_th[k]); hk_nth = 0; return 0; }
+        for (int k = 0; k < hk_nth;) { if (SuspendThread(hk_th[k]) == 0xFFFFFFFFu) { CloseHandle(hk_th[k]); hk_th[k] = hk_th[--hk_nth]; continue; } k++; }
+        int busy = 0;
+        for (int k = 0; k < hk_nth; k++) {   /* also waits until each one has really stopped */
+            *(DWORD *)(hk_ctx + 0x30) = 0x00100001u;   /* CONTEXT_CONTROL */
+            if (!GetThreadContext(hk_th[k], hk_ctx)) continue;
+            u64 rip = *(u64 *)(hk_ctx + 0xf8);
+            for (u32 i = 0; i < n; i++) { u64 a0 = (u64)h[i].target; if (rip > a0 && rip < a0 + h[i].length) busy = 1; } }
+        if (!busy) return 1;
+        hk_release(); Sleep(1);
+    }
+    return -1;
+}
+#else
+static int hk_hold(const S14_Hook *h, u32 n) { (void)h; (void)n; return 0; }
+static void hk_release(void) { }
+#endif
 EXPORT u32 GAMEABI SAN14_ModInitV1(const S14_CoreAPI *a)
 {
     if (!a || a->size < sizeof(S14_CoreAPI) || a->abi != 0x00010000u || !a->resolved || (a->resolved->image_size != 0x29ff000 && a->resolved->image_size != 0x2a02000) ||
@@ -2039,6 +2130,7 @@ EXPORT u32 GAMEABI SAN14_ModInitV1(const S14_CoreAPI *a)
     }
     logs("SeasonRules 1 starting");
     logs("v26k54: route cost - searches without a unit keep the game's own cost; change numbers for the map mod given out (RouteCostGen, TerrainGen)");
+    logs("v26k55: with the integrated patch the game-code hooks wait for its convenience module's start check (features 5/6 no longer left off)");
 #if defined(SEASON_TEST) && !defined(HOSTTEST)
     sr_crash_catcher();
 #endif
@@ -2055,6 +2147,26 @@ EXPORT u32 GAMEABI SAN14_ModInitV1(const S14_CoreAPI *a)
     engine_load();
     { HANDLE th = CreateThread(0, 0, (void *)sender_thread, 0, 0, 0); if (th) CloseHandle(th); else logs("map link thread failed (the map will not show the disasters)"); }
     time_orig = (TimeFn)(game + RVA_TIME_FN);
+    u32 ret = 1;
+#ifndef HOSTTEST
+    if (ic_present()) {                         /* v26k55: the game-code hooks wait for 통합편의's start check (see ic_present) */
+        logs("v26k55: the integrated patch's convenience module (통합편의) is installed - the game-code hooks are put in after its start check (it compares those places; features 5/6 stayed off on PCs where ours came first)");
+        HANDLE th = CreateThread(0, 0, (void *)ic_wait_thread, 0, 0, 0);
+        if (th) CloseHandle(th); else { logs("v26k55: the waiting thread could not start - hooks put in now (as before)"); ret = install_hooks(); }
+    } else
+#endif
+        ret = install_hooks();
+#ifdef SEASON_MEASURE
+    gp_hook_seasonsync();                       /* v26k54: before SeasonSync goes on to create the device */
+    measure_start();
+#endif
+    mod_inited = 1;
+    return ret;
+}
+/* v26k55: every game-code hook (moved out of the start as it was, unchanged); 1 when the time step or the speed hook went in */
+static u32 install_hooks(void)
+{
+    const S14_CoreAPI *a = api;
 #ifdef SEASON_TEST
     int t_ok = 0;   /* v26k38a test build: the call site is left alone on purpose, so the time step's entry hook (the fallback) runs in the game */
     logs("TEST BUILD: time call site skipped on purpose - the fallback (time step entry) is what runs in this test");
@@ -2108,11 +2220,6 @@ EXPORT u32 GAMEABI SAN14_ModInitV1(const S14_CoreAPI *a)
 #endif
         *p = 0; logs(c); if (bad) start_notice(c);
     }
-#ifdef SEASON_MEASURE
-    gp_hook_seasonsync();                       /* v26k54: before SeasonSync goes on to create the device */
-    measure_start();
-#endif
-    mod_inited = 1;
     return (t_ok || s_ok) ? 1u : 0u;
 }
 /* ---- v26k18: self-host. The season rules no longer need the shared mod loader (its resolver knows only the rollback exe, and
@@ -2131,11 +2238,18 @@ static i32 GAMEABI sh_install(const char *id, const S14_Hook *h, u32 n)
 {
     for (u32 i = 0; i < n; i++) { if (!h[i].target || h[i].length == 0 || h[i].length > 16 || !sh_readable(h[i].target, h[i].length)) return 0;
         for (u32 k = 0; k < h[i].length; k++) if (h[i].target[k] != h[i].expected[k]) { char b[160], *p = b; p = pstr(p, "self-host: "); p = pstr(p, id); p = pstr(p, " - the game code there is not what it should be (another mod or another version): skipped"); *p = 0; logs(b); return 0; } }
-    for (u32 i = 0; i < n; i++) { DWORD old = 0; if (!VirtualProtect(h[i].target, h[i].length, 0x40, &old)) return 0;
+    /* v26k55: hooks put in while a campaign runs - the game's other threads are held for the write (nothing else is called meanwhile:
+       no log, no memory check with a lock - only the page protection and the bytes) */
+    int held = hk_pause ? hk_hold(h, n) : 0;
+    if (held < 0) { char b[200], *p = b; p = pstr(p, "self-host: "); p = pstr(p, id); p = pstr(p, " - a game thread stayed inside the place for a while: skipped"); *p = 0; logs(b); return 0; }
+    if (held) for (u32 i = 0; i < n; i++) for (u32 k = 0; k < h[i].length; k++) if (h[i].target[k] != h[i].expected[k]) {   /* changed meanwhile */
+        hk_release(); char b[200], *p = b; p = pstr(p, "self-host: "); p = pstr(p, id); p = pstr(p, " - another mod changed the place just now: skipped"); *p = 0; logs(b); return 0; }
+    for (u32 i = 0; i < n; i++) { DWORD old = 0; if (!VirtualProtect(h[i].target, h[i].length, 0x40, &old)) { if (held) hk_release(); return 0; }
         for (u32 k = 1; k < h[i].length; k++) h[i].target[k] = h[i].replacement[k];   /* the first byte last */
         h[i].target[0] = h[i].replacement[0];
         VirtualProtect(h[i].target, h[i].length, old, &old); FlushInstructionCache(GetCurrentProcess(), h[i].target, h[i].length); }
-    { char b[120], *p = b; p = pstr(p, "self-host: "); p = pstr(p, id); p = pstr(p, " installed"); *p = 0; logs(b); }
+    if (held) hk_release();
+    { char b[160], *p = b; p = pstr(p, "self-host: "); p = pstr(p, id); p = pstr(p, held ? " installed (game threads held for the write)" : " installed"); *p = 0; logs(b); }
     return 1;
 }
 static u8 *sh_page; static u32 sh_used;
